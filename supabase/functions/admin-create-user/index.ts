@@ -25,6 +25,32 @@ Deno.serve(async (req) => {
   if (!/^[A-Za-z0-9_-]{3,40}$/.test(username) || password.length < 12 || !['customer','dispatcher','utz','admin'].includes(role)) {
     return new Response('Invalid input: username format, password length (12+), or role.', { status: 400, headers: cors })
   }
+  if (password.length > 128) {
+    return new Response('Invalid input: password must not exceed 128 characters.', { status: 400, headers: cors })
+  }
+
+  const unitIds = [business_unit_id, default_from_id].filter((value): value is string => typeof value === 'string' && value.length > 0)
+  let unitRows: { id: string; kind: string; is_active: boolean }[] = []
+  if (unitIds.length) {
+    const { data, error: unitsError } = await admin.from('business_units')
+      .select('id,kind,is_active')
+      .in('id', [...new Set(unitIds)])
+    if (unitsError) return new Response('Could not validate business-unit assignment.', { status: 500, headers: cors })
+    unitRows = data || []
+  }
+  if (role === 'customer') {
+    const assigned = unitRows.find((unit) => unit.id === business_unit_id)
+    if (!assigned || assigned.kind !== 'BE' || !assigned.is_active) {
+      return new Response('Customer must be assigned to an active business unit (BE).', { status: 400, headers: cors })
+    }
+  }
+  if (default_from_id) {
+    const origin = unitRows.find((unit) => unit.id === default_from_id)
+    if (!origin || origin.kind !== 'BE' || !origin.is_active) {
+      return new Response('Default origin must be an active business unit (BE).', { status: 400, headers: cors })
+    }
+  }
+
   const email = `${username.toLowerCase()}@login.akson-transport.invalid`
   const { data: created, error: createError } = await admin.auth.admin.createUser({ email, password, email_confirm: true })
   if (createError) return new Response(createError.message, { status: 400, headers: cors })
