@@ -546,3 +546,30 @@ html[data-theme="dark"] .report-table td { border-color: var(--border); }
   .day-slot { height: 9px; }
   .day-slots-muted span { height: 9px; }
 }
+
+
+/* 0.4.3 — optional registry template and request attachment controls */
+.registry-template-card { display: flex; flex-direction: column; gap: 14px; }
+.registry-template-current { display: flex; align-items: center; gap: 11px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft, #f8fafc); color: var(--text); }
+.registry-template-current > svg { flex: 0 0 auto; color: var(--primary); }
+.registry-template-current span, .registry-file-status span { display: grid; gap: 3px; min-width: 0; }
+.registry-template-current strong, .registry-file-status strong { overflow-wrap: anywhere; font-size: 11px; }
+.registry-template-current small, .registry-file-status small { color: var(--muted); font-size: 9px; line-height: 1.4; }
+.registry-template-actions, .registry-attachment-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.registry-template-actions .button, .registry-attachment-actions .button { min-height: 36px; }
+.registry-file-picker { position: relative; cursor: pointer; overflow: hidden; }
+.registry-file-picker input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.optional-label { display: inline-block; margin-left: 5px; color: var(--muted); font-size: 9px; font-weight: 500; }
+.registry-attachment-panel { display: grid; gap: 10px; padding: 12px; border: 1px dashed var(--border-strong); border-radius: 10px; background: var(--surface-soft, #f8fafc); }
+.registry-file-status { display: flex; align-items: center; gap: 9px; min-width: 0; color: var(--text); }
+.registry-file-status > svg { flex: 0 0 auto; color: var(--primary); }
+.registry-file-status > span { flex: 1; }
+.registry-file-hint { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+html[data-theme="dark"] .registry-template-current,
+html[data-theme="dark"] .registry-attachment-panel { background: #111923; border-color: var(--border-strong); }
+@media (max-width: 520px) {
+  .registry-template-actions, .registry-attachment-actions { align-items: stretch; }
+  .registry-template-actions .button, .registry-attachment-actions .button { flex: 1 1 100%; justify-content: center; }
+  .registry-file-status { align-items: flex-start; flex-wrap: wrap; }
+  .registry-file-status > span { min-width: calc(100% - 35px); }
+}

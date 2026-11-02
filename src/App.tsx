@@ -1,11 +1,11 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react'
 import {
   Activity, AlertCircle, ArrowRight, ArrowUpRight,
   Building2, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight,
   CircleHelp, FileSpreadsheet, Filter, LayoutDashboard, LogOut, Menu, Moon,
   Package, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sun, Truck, Users,
   Warehouse, X, Pencil, Ban, Eye, Layers3, History as HistoryIcon, Save,
-  SlidersHorizontal, Clock3
+  SlidersHorizontal, Clock3, Upload, Download, FileText
 } from 'lucide-react'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRequest } from './types'
@@ -14,7 +14,7 @@ type View = 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'direct
 type RequestDraft = {
   transport_date: string; slot_number: number; from_unit_id: string | null; from_other_address: string | null;
   to_unit_id: string | null; to_other_address: string | null; capacity_tons: number; loading_type: 'rear' | 'side';
-  cargo_types: string[]; stock_pallets: number; kdk_pallets: number; packaging_qty: number; equipment_pallet_places: number; requester_id?: string
+  cargo_types: string[]; stock_pallets: number; kdk_pallets: number; packaging_qty: number; equipment_pallet_places: number; requester_id?: string; registry_file?: File | null
 }
 type UnitDraft = { id?: string | null; code: string; name: string; kind: 'BE' | 'RC'; address: string }
 type AuditRecord = { id: number; actor_id: string | null; action: string; entity_type: string; entity_id: string | null; details: Record<string, any>; created_at: string; actor_username?: string | null }
@@ -73,6 +73,9 @@ function App() {
   const [editingPerson, setEditingPerson] = useState<Profile | null>(null)
   const [userEditDraft, setUserEditDraft] = useState({ username: '', password: '', role: 'customer' as Role, business_unit_id: '', default_from_id: '', is_active: true })
   const [bookingAdvanceDays, setBookingAdvanceDays] = useState('0')
+  const [registryTemplatePath, setRegistryTemplatePath] = useState<string | null>(null)
+  const [registryTemplateName, setRegistryTemplateName] = useState<string | null>(null)
+  const [templateUploading, setTemplateUploading] = useState(false)
   const [roleLimits, setRoleLimits] = useState<RoleLimitValues>({ customer: '30', dispatcher: '30', utz: '30', admin: '30' })
   const [auditRows, setAuditRows] = useState<AuditRecord[]>([])
   const [historyHasMore, setHistoryHasMore] = useState(false)
@@ -189,11 +192,15 @@ function App() {
   async function loadSettings() {
     if (!supabase || !profile) return
     const [settingsResult, limitsResult] = await Promise.all([
-      supabase.from('portal_settings').select('booking_advance_days').eq('id', true).maybeSingle(),
+      supabase.from('portal_settings').select('booking_advance_days,registry_template_path,registry_template_name').eq('id', true).maybeSingle(),
       supabase.from('role_request_limits').select('role,max_requests_per_month')
     ])
     if (settingsResult.error) { setError(`Настройки записи: ${settingsResult.error.message}. Примените миграцию 0003_admin_controls_audit.sql.`); return }
-    if (settingsResult.data) setBookingAdvanceDays(String(settingsResult.data.booking_advance_days ?? 0))
+    if (settingsResult.data) {
+      setBookingAdvanceDays(String(settingsResult.data.booking_advance_days ?? 0))
+      setRegistryTemplatePath(settingsResult.data.registry_template_path || null)
+      setRegistryTemplateName(settingsResult.data.registry_template_name || null)
+    }
     if (limitsResult.error) { setError(`Лимиты заявок: ${limitsResult.error.message}. Примените миграцию 0003_admin_controls_audit.sql.`); return }
     const next: RoleLimitValues = { customer: '30', dispatcher: '30', utz: '30', admin: '30' }
     ;(limitsResult.data || []).forEach((row: any) => { if (row.role in next) next[row.role as Role] = String(row.max_requests_per_month) })
@@ -251,6 +258,45 @@ function App() {
     else { setNotice('Настройки ограничений сохранены.'); await loadSettings(); await loadHistory() }
   }
 
+  async function downloadPrivateFile(path: string | null | undefined, fileName?: string | null) {
+    if (!supabase || !path) { setError('Файл пока не загружен.'); return }
+    const { data, error: signedError } = await supabase.storage.from('dispatch-files').createSignedUrl(path, 60, fileName ? { download: fileName } : { download: true })
+    if (signedError || !data?.signedUrl) { setError(`Не удалось получить ссылку на файл: ${signedError?.message || 'ссылка не создана'}`); return }
+    const link = document.createElement('a')
+    link.href = data.signedUrl
+    link.download = fileName || ''
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    document.body.appendChild(link); link.click(); link.remove()
+  }
+
+  async function downloadRegistryTemplate() {
+    await downloadPrivateFile(registryTemplatePath, registryTemplateName || 'Шаблон_реестра')
+  }
+
+  async function uploadRegistryTemplate(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || !supabase || profile?.role !== 'admin') return
+    const extension = file.name.split('.').pop()?.toLowerCase() || ''
+    if (!['xlsx', 'xls', 'csv', 'ods'].includes(extension)) { setError('Шаблон должен быть в формате XLSX, XLS, CSV или ODS.'); return }
+    if (file.size > 20 * 1024 * 1024) { setError('Размер шаблона не должен превышать 20 МБ.'); return }
+    const path = `templates/registry-template.${extension}`
+    const previousPath = registryTemplatePath
+    setTemplateUploading(true); setError('')
+    const { error: uploadError } = await supabase.storage.from('dispatch-files').upload(path, file, { upsert: true, contentType: file.type || 'application/octet-stream' })
+    if (uploadError) { setTemplateUploading(false); setError(`Не удалось загрузить шаблон: ${uploadError.message}`); return }
+    const { error: updateError } = await supabase.from('portal_settings').update({ registry_template_path: path, registry_template_name: file.name, updated_at: new Date().toISOString() }).eq('id', true)
+    setTemplateUploading(false)
+    if (updateError) { setError(`Файл загружен, но не удалось сохранить его в настройках: ${updateError.message}`); return }
+    if (previousPath && previousPath !== path) {
+      const { error: removeError } = await supabase.storage.from('dispatch-files').remove([previousPath])
+      if (removeError) console.warn('Не удалось удалить предыдущий шаблон реестра:', removeError.message)
+    }
+    setNotice(`Шаблон реестра «${file.name}» загружен.`)
+    await loadSettings(); await loadHistory()
+  }
+
   async function signIn(event: FormEvent) {
     event.preventDefault()
     if (!supabase) return
@@ -276,9 +322,12 @@ function App() {
       const adminMode = profile.role === 'admin'
       const requesterId = adminMode ? (payload.requester_id || existing?.requester_id || '') : (existing?.requester_id || profile.id)
       const requesterProfile = adminMode ? people.find((person) => person.id === requesterId) : profile
-      const businessUnitId = adminMode ? requesterProfile?.business_unit_id : (existing?.business_unit_id || profile.business_unit_id)
       if (!requesterId || !requesterProfile) throw new Error('Выберите заказчика из списка пользователей.')
-      if (!businessUnitId) throw new Error('У выбранного заказчика не назначена БЕ. Назначьте её в разделе «Пользователи».')
+      // A customer may intentionally have no profile BE. The physical origin is still
+      // mandatory in the route fields and remains independent from this profile link.
+      const businessUnitId = existing && existing.requester_id === requesterId
+        ? existing.business_unit_id
+        : (requesterProfile.business_unit_id || null)
       const base = {
         requester_id: requesterId, business_unit_id: businessUnitId,
         transport_date: payload.transport_date, slot_number: payload.slot_number,
@@ -307,11 +356,37 @@ function App() {
         const { error: cargoError } = await supabase.from('request_cargo').insert(cargoRows.map((row) => ({ ...row, request_id: id })))
         if (cargoError) throw cargoError
       }
+
+      let registryWarning = ''
+      if (payload.registry_file) {
+        const file = payload.registry_file
+        const extension = file.name.split('.').pop()?.toLowerCase() || ''
+        if (!['xlsx', 'xls', 'csv', 'ods'].includes(extension)) registryWarning = 'Формат реестра должен быть XLSX, XLS, CSV или ODS.'
+        else if (file.size > 20 * 1024 * 1024) registryWarning = 'Размер реестра не должен превышать 20 МБ.'
+        else {
+          const safeName = file.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(-120) || `registry.${extension}`
+          const storagePath = `requests/${id}/${crypto.randomUUID()}-${safeName}`
+          const { error: uploadError } = await supabase.storage.from('dispatch-files').upload(storagePath, file, { upsert: false, contentType: file.type || 'application/octet-stream' })
+          if (uploadError) registryWarning = `Не удалось прикрепить реестр: ${uploadError.message}`
+          else {
+            const { error: attachError } = await supabase.from('transport_requests').update({ registry_file_path: storagePath, registry_file_name: file.name }).eq('id', id)
+            if (attachError) {
+              await supabase.storage.from('dispatch-files').remove([storagePath])
+              registryWarning = `Заявка сохранена, но реестр не прикреплён: ${attachError.message}`
+            } else if (existing?.registry_file_path) {
+              const { error: removeOldError } = await supabase.storage.from('dispatch-files').remove([existing.registry_file_path])
+              if (removeOldError) console.warn('Не удалось удалить заменённый реестр из Storage:', removeOldError.message)
+            }
+          }
+        }
+      }
+
       const savedDate = new Date(`${payload.transport_date}T00:00:00`)
       const savedMonth = new Date(savedDate.getFullYear(), savedDate.getMonth(), 1)
       setRequestModal({ open: false }); setMonth(savedMonth); setSelectedDay(payload.transport_date); setView('calendar')
       setNotice(existing ? 'Заявка обновлена.' : 'Заявка создана.')
       await loadData(savedMonth)
+      if (registryWarning) setError(`${registryWarning} Заявка сохранена; реестр можно добавить позднее, открыв её на редактирование.`)
       if (profile.role === 'dispatcher' || profile.role === 'admin') await loadHistory()
     } catch (e) { setError(errorText(e)) }
     finally { setSaving(false) }
@@ -340,7 +415,6 @@ function App() {
   async function createUser(event: FormEvent) {
     event.preventDefault()
     if (!supabase) return
-    if (userDraft.role === 'customer' && !userDraft.business_unit_id) { setError('Для заказчика необходимо выбрать БЕ.'); return }
     setSaving(true); setError('')
     const { data, error: invokeError } = await supabase.functions.invoke('admin-create-user', {
       body: {
@@ -495,14 +569,14 @@ function App() {
         {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} />}
         {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
         {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
-        {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} />}
+        {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} templateName={registryTemplateName} templateUploading={templateUploading} onTemplateUpload={uploadRegistryTemplate} onDownloadTemplate={downloadRegistryTemplate} />}
         {view === 'reports' && canViewStaffPages && <ReportsView rows={reportRows} from={reportsFrom} setFrom={setReportsFrom} to={reportsTo} setTo={setReportsTo} loading={reportsLoading} onGenerate={loadReports} />}
         {view === 'history' && canViewStaffPages && <HistoryView rows={auditRows} people={people} hasMore={historyHasMore} loadingMore={historyLoadingMore} onLoadMore={() => loadHistory(true)} search={historySearch} setSearch={setHistorySearch} entity={historyEntity} setEntity={setHistoryEntity} from={historyFrom} setFrom={setHistoryFrom} to={historyTo} setTo={setHistoryTo} onRefresh={loadHistory} />}
         <footer className="app-footer"><span>АКСОН ЛОГИСТИКА</span><span>Портал заказа транспорта · {new Date().getFullYear()}</span></footer>
       </main>
     </div>
     {editingPerson && <UserEditModal person={editingPerson} units={units} draft={userEditDraft} setDraft={setUserEditDraft} onSubmit={saveUserEdit} onClose={() => setEditingPerson(null)} saving={saving} currentUserId={profile.id} />}
-    {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} saving={saving} />}
+    {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} saving={saving} registryTemplateName={registryTemplateName} registryTemplatePath={registryTemplatePath} onDownloadTemplate={downloadRegistryTemplate} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
     {loading && <div className="loading-pill"><span className="spinner" /> Обновляем данные…</div>}
   </div>
 }
@@ -688,8 +762,8 @@ function RequestsView({ requests, units, profile, search, setSearch, statusFilte
   const canChangeStatuses = profile.role === 'dispatcher' || profile.role === 'admin'
   const isCustomer = profile.role === 'customer'
   function exportCsv() {
-    const headers = ['Номер заявки', 'Дата', 'Слот', 'БЕ', 'Откуда', 'Куда', 'Заказчик', 'Грузоподъёмность, т', 'Погрузка', 'Груз', 'Грузомест оборудования, паллетомест', 'Статус']
-    const rows = requests.map((r) => [r.request_no, r.transport_date, r.slot_number, r.business_units?.code || '', resolveUnit(units, r.from_unit_id, r.from_other_address), resolveUnit(units, r.to_unit_id, r.to_other_address), r.profiles?.username || '', r.capacity_tons, r.loading_type === 'rear' ? 'Задняя' : 'Боковая', (r.request_cargo || []).map((c) => cargoNames[c.cargo_type] || c.cargo_type).join('; '), r.request_cargo?.find((c) => c.cargo_type === 'equipment')?.equipment_pallet_places || '', statusNames[r.status]])
+    const headers = ['Номер заявки', 'Дата', 'Слот', 'БЕ', 'Откуда', 'Куда', 'Заказчик', 'Грузоподъёмность, т', 'Погрузка', 'Груз', 'Грузомест оборудования, паллетомест', 'Реестр', 'Статус']
+    const rows = requests.map((r) => [r.request_no, r.transport_date, r.slot_number, r.business_units?.code || '', resolveUnit(units, r.from_unit_id, r.from_other_address), resolveUnit(units, r.to_unit_id, r.to_other_address), r.profiles?.username || '', r.capacity_tons, r.loading_type === 'rear' ? 'Задняя' : 'Боковая', (r.request_cargo || []).map((c) => cargoNames[c.cargo_type] || c.cargo_type).join('; '), r.request_cargo?.find((c) => c.cargo_type === 'equipment')?.equipment_pallet_places || '', r.registry_file_name || '', statusNames[r.status]])
     const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
     const csv = '\uFEFF' + [headers, ...rows].map((row) => row.map(escape).join(';')).join('\r\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
@@ -736,7 +810,7 @@ function UsersView({ people, units, currentUserId, formOpen, setFormOpen, draft,
         <label>Логин<input value={draft.username} onChange={(e) => setDraft({ ...draft, username: e.target.value })} pattern="[A-Za-z0-9_-]{3,40}" minLength={3} maxLength={40} placeholder="IVANOV01" required/><small>3–40 символов: латиница, цифры, дефис, подчёркивание</small></label>
         <label>Пароль<input type="password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} minLength={12} placeholder="Не менее 12 символов" required/><small>Пароль не показывается повторно после создания</small></label>
         <label>Роль<select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role, business_unit_id: e.target.value === 'customer' ? draft.business_unit_id : '' })}>{Object.entries(roleNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-        <label>Бизнес-единица {draft.role === 'customer' && <em>*</em>}<select value={draft.business_unit_id} onChange={(e) => setDraft({ ...draft, business_unit_id: e.target.value })}><option value="">Не назначена</option>{units.filter((u) => u.kind === 'BE' && u.is_active).map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
+        <label>{draft.role === 'customer' ? 'Бизнес-единица (необязательно)' : 'Бизнес-единица'}<select value={draft.business_unit_id} onChange={(e) => setDraft({ ...draft, business_unit_id: e.target.value })}><option value="">Не назначена</option>{units.filter((u) => u.kind === 'BE' && u.is_active).map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
         <label>БЕ по умолчанию (откуда)<select value={draft.default_from_id} onChange={(e) => setDraft({ ...draft, default_from_id: e.target.value })}><option value="">Не задана</option>{units.filter((u) => u.kind === 'BE' && u.is_active).map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
         <div className="form-submit"><button className="button button-primary" disabled={saving}>{saving ? 'Создаём…' : 'Создать учётную запись'}</button></div>
       </form>
@@ -770,7 +844,7 @@ function UserEditModal({ person, units, draft, setDraft, onSubmit, onClose, savi
         <label>Логин<input value={draft.username} onChange={(e) => setDraft({ ...draft, username: e.target.value })} pattern="[A-Za-z0-9_-]{3,40}" minLength={3} maxLength={40} required/><small>При смене логина обновится и имя для входа.</small></label>
         <label>Новый пароль<input type="password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} minLength={12} maxLength={128} placeholder="Оставьте пустым без изменений"/><small>Не менее 12 символов; необязательно.</small></label>
         <label>Роль<select value={draft.role} disabled={isSelf} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role, business_unit_id: e.target.value === 'customer' ? draft.business_unit_id : '' })}>{Object.entries(roleNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-        <label>Бизнес-единица<select value={draft.business_unit_id} onChange={(e) => setDraft({ ...draft, business_unit_id: e.target.value })}><option value="">Не назначена</option>{beUnits.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
+        <label>{draft.role === 'customer' ? 'Бизнес-единица (необязательно)' : 'Бизнес-единица'}<select value={draft.business_unit_id} onChange={(e) => setDraft({ ...draft, business_unit_id: e.target.value })}><option value="">Не назначена</option>{beUnits.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
         <label>БЕ по умолчанию (откуда)<select value={draft.default_from_id} onChange={(e) => setDraft({ ...draft, default_from_id: e.target.value })}><option value="">Не задана</option>{beUnits.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
       </div>
       <label className="checkbox-line"><input type="checkbox" checked={draft.is_active} disabled={isSelf} onChange={(e) => setDraft({ ...draft, is_active: e.target.checked })}/><span><strong>Учётная запись активна</strong><small>Отключённый пользователь не сможет войти в портал.</small></span></label>
@@ -795,9 +869,10 @@ function DirectoryView({ units, formOpen, setFormOpen, draft, setDraft, onSubmit
   </div>
 }
 
-function SettingsView({ bookingAdvanceDays, setBookingAdvanceDays, roleLimits, setRoleLimits, onSubmit, saving }: {
+function SettingsView({ bookingAdvanceDays, setBookingAdvanceDays, roleLimits, setRoleLimits, onSubmit, saving, templateName, templateUploading, onTemplateUpload, onDownloadTemplate }: {
   bookingAdvanceDays: string; setBookingAdvanceDays: (v: string) => void; roleLimits: RoleLimitValues;
-  setRoleLimits: (v: RoleLimitValues) => void; onSubmit: (e: FormEvent) => void; saving: boolean
+  setRoleLimits: (v: RoleLimitValues) => void; onSubmit: (e: FormEvent) => void; saving: boolean;
+  templateName: string | null; templateUploading: boolean; onTemplateUpload: (e: ChangeEvent<HTMLInputElement>) => void; onDownloadTemplate: () => void
 }) {
   const roles: Role[] = ['customer', 'dispatcher', 'utz', 'admin']
   return <div className="settings-page">
@@ -808,6 +883,14 @@ function SettingsView({ bookingAdvanceDays, setBookingAdvanceDays, roleLimits, s
       <section className="surface-card settings-card"><div className="card-heading"><div><h3>Срок предварительной записи</h3><p>Минимальное количество дней между текущей датой и датой перевозки.</p></div><div className="directory-icon rc"><Clock3 size={18}/></div></div>
         <label className="advance-setting"><span><strong>Запись доступна за</strong><small>0 — день в день; 1 — только с завтрашнего дня; 2 — за два дня и т.д.</small></span><span className="settings-number"><input type="number" min="0" max="365" step="1" value={bookingAdvanceDays} onChange={(e) => setBookingAdvanceDays(e.target.value)}/><small>дней</small></span></label>
         <div className="settings-example"><strong>Текущая настройка:</strong> {Number(bookingAdvanceDays) === 0 ? 'заявку можно оформить на сегодня.' : `заявку можно оформить не ранее чем за ${bookingAdvanceDays} дн. до даты перевозки.`}</div>
+      </section>
+      <section className="surface-card settings-card registry-template-card">
+        <div className="card-heading"><div><h3>Шаблон реестра</h3><p>Файл, который заказчики смогут скачать в форме заявки и заполнить перед прикреплением к перевозке.</p></div><div className="directory-icon be"><FileText size={18}/></div></div>
+        <div className="registry-template-current"><FileText size={18}/><span><strong>{templateName || 'Шаблон ещё не загружен'}</strong><small>{templateName ? 'Текущий шаблон доступен пользователям портала.' : 'Загрузите XLSX, XLS, CSV или ODS, размером до 20 МБ.'}</small></span></div>
+        <div className="registry-template-actions">
+          <label className="button button-primary"><Upload size={15}/>{templateUploading ? 'Загрузка…' : templateName ? 'Заменить шаблон' : 'Загрузить шаблон'}<input type="file" accept=".xlsx,.xls,.csv,.ods" onChange={onTemplateUpload} disabled={templateUploading} hidden/></label>
+          {templateName && <button type="button" className="button button-secondary" onClick={onDownloadTemplate}><Download size={15}/> Скачать текущий</button>}
+        </div>
       </section>
       <div className="settings-save-row"><span><ShieldCheck size={15}/> Ограничения проверяются на стороне базы данных.</span><button className="button button-primary" disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить настройки'} <Save size={15}/></button></div>
     </form>
@@ -880,7 +963,7 @@ function HistoryView({ rows, people, hasMore, loadingMore, onLoadMore, search, s
   const actionTitles: Record<string, string> = {
     create: 'Создана заявка', request_update: 'Изменена заявка', request_status_update: 'Изменён статус заявки',
     reschedule: 'Перенесена заявка', cargo_add: 'Добавлен груз', cargo_update: 'Изменён состав груза', cargo_remove: 'Удалён груз',
-    profile_create: 'Создан пользователь', profile_update: 'Изменён пользователь', profile_access_update: 'Изменён доступ пользователя',
+    profile_create: 'Создан пользователь', profile_update: 'Изменён пользователь', profile_access_update: 'Изменён доступ пользователя', request_registry_update: 'Изменён файл реестра заявки',
     directory_create: 'Добавлена запись справочника', directory_update: 'Изменён справочник', directory_delete: 'Удалена запись справочника',
     settings_create: 'Созданы настройки', settings_update: 'Изменены настройки', settings_delete: 'Удалены настройки'
   }
@@ -913,11 +996,11 @@ function HistoryView({ rows, people, hasMore, loadingMore, onLoadMore, search, s
   </div>
 }
 
-function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, request, slot, initialDate, onClose, onSave, saving }: { units: BusinessUnit[]; people: Profile[]; profile: Profile; occupancy: SlotOccupancy[]; bookingAdvanceDays: number; request?: TransportRequest; slot?: number; initialDate?: string; onClose: () => void; onSave: (payload: RequestDraft, request?: TransportRequest) => Promise<void>; saving: boolean }) {
+function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, request, slot, initialDate, onClose, onSave, saving, registryTemplateName, registryTemplatePath, onDownloadTemplate, onDownloadRegistry }: { units: BusinessUnit[]; people: Profile[]; profile: Profile; occupancy: SlotOccupancy[]; bookingAdvanceDays: number; request?: TransportRequest; slot?: number; initialDate?: string; onClose: () => void; onSave: (payload: RequestDraft, request?: TransportRequest) => Promise<void>; saving: boolean; registryTemplateName: string | null; registryTemplatePath: string | null; onDownloadTemplate: () => void; onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void }) {
   const customerOptions = people.filter((person) => {
-    const assignedBe = units.find((unit) => unit.id === person.business_unit_id && unit.kind === 'BE')
+    const assignedBe = person.business_unit_id ? units.find((unit) => unit.id === person.business_unit_id && unit.kind === 'BE') : null
     const isCurrentRequester = person.id === request?.requester_id
-    return person.role === 'customer' && !!assignedBe && (assignedBe.is_active || isCurrentRequester) && (person.is_active || isCurrentRequester)
+    return person.role === 'customer' && (!person.business_unit_id || !!assignedBe && assignedBe.is_active || isCurrentRequester) && (person.is_active || isCurrentRequester)
   })
   const initialRequesterId = request?.requester_id || (profile.role === 'admin' ? '' : profile.id)
   const initialRequester = people.find((person) => person.id === initialRequesterId)
@@ -937,6 +1020,7 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const [packaging, setPackaging] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'packaging')?.packaging_qty || 0))
   const [equipmentPalletPlaces, setEquipmentPalletPlaces] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'equipment')?.equipment_pallet_places || 0))
   const [formError, setFormError] = useState('')
+  const [registryFile, setRegistryFile] = useState<File | null>(null)
   const be = units.filter((u) => u.kind === 'BE' && (u.is_active || u.id === request?.from_unit_id))
   const destinations = units.filter((u) => u.is_active || u.id === request?.to_unit_id)
   const occupied = occupancy.some((r) => r.transport_date === date && r.slot_number === slotNo && !(request?.transport_date === date && request.slot_number === slotNo))
@@ -950,11 +1034,16 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
       if ((!request || date !== request.transport_date) && date < minimumDate) throw new Error(`Дата перевозки должна быть не ранее ${dateLabel(minimumDate)}.`)
       if (!from || !to || (from === 'other' && !fromOther.trim()) || (to === 'other' && !toOther.trim())) throw new Error('Заполните маршрут перевозки.')
       if (!cargo.length) throw new Error('Выберите хотя бы один вид груза.')
+      if (registryFile) {
+        const extension = registryFile.name.split('.').pop()?.toLowerCase() || ''
+        if (!['xlsx', 'xls', 'csv', 'ods'].includes(extension)) throw new Error('Реестр должен быть в формате XLSX, XLS, CSV или ODS.')
+        if (registryFile.size > 20 * 1024 * 1024) throw new Error('Размер реестра не должен превышать 20 МБ.')
+      }
       if (occupied) throw new Error('Этот слот уже занят. Выберите другой слот или дату.')
       if (cargo.includes('goods') && Number(stock) + Number(kdk) <= 0) throw new Error('Укажите количество паллет Сток и/или КДК.')
       if (cargo.includes('packaging') && Number(packaging) <= 0) throw new Error('Укажите количество тары.')
       if (cargo.includes('equipment') && (!Number.isInteger(Number(equipmentPalletPlaces)) || Number(equipmentPalletPlaces) <= 0)) throw new Error('Укажите количество грузомест оборудования в паллетоместах.')
-      await onSave({ requester_id: profile.role === 'admin' ? requesterId : undefined, transport_date: date, slot_number: slotNo, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0), equipment_pallet_places: Number(equipmentPalletPlaces || 0) }, request)
+      await onSave({ requester_id: profile.role === 'admin' ? requesterId : undefined, transport_date: date, slot_number: slotNo, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0), equipment_pallet_places: Number(equipmentPalletPlaces || 0), registry_file: registryFile }, request)
     } catch (e) { setFormError(errorText(e)) }
   }
   return (
@@ -1052,6 +1141,17 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
             {cargo.includes('packaging') && <label className="request-field request-quantity-field" title="Количество единиц тары в штуках."><span>Тара, шт.</span><input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!canEdit}/></label>}
             {cargo.includes('equipment') && <label className="request-field request-quantity-field" title="Количество грузомест оборудования в паллетоместах."><span>Оборудование, паллетомест</span><input type="number" min="1" step="1" value={equipmentPalletPlaces} onChange={(e) => setEquipmentPalletPlaces(e.target.value)} placeholder="Например, 4" required disabled={!canEdit}/></label>}
           </div>}
+
+          <div className="form-section-label">Реестр к заявке <small className="optional-label">необязательно</small></div>
+          <div className="registry-attachment-panel">
+            <div className="registry-attachment-actions">
+              {canEdit && <label className="button button-secondary registry-file-picker"><Upload size={15}/>{registryFile ? 'Заменить реестр' : request?.registry_file_name ? 'Заменить реестр' : 'Добавить реестр'}<input type="file" accept=".xlsx,.xls,.csv,.ods" onChange={(e) => { setRegistryFile(e.target.files?.[0] || null); e.currentTarget.value = '' }} hidden/></label>}
+              <button type="button" className="button button-secondary" onClick={onDownloadTemplate} disabled={!registryTemplatePath} title={registryTemplatePath ? `Скачать шаблон ${registryTemplateName || ''}` : 'Администратор ещё не загрузил шаблон'}><Download size={15}/> Скачать шаблон</button>
+            </div>
+            {registryFile ? <div className="registry-file-status"><FileText size={16}/><span>Выбран файл: <strong>{registryFile.name}</strong><small>{(registryFile.size / 1024 / 1024).toFixed(2)} МБ · файл будет приложен после сохранения заявки</small></span><button type="button" className="icon-button small" onClick={() => setRegistryFile(null)} title="Отменить выбор файла"><X size={14}/></button></div>
+              : request?.registry_file_path ? <div className="registry-file-status"><FileText size={16}/><span>Прикреплён реестр: <strong>{request.registry_file_name || 'Файл реестра'}</strong><small>Файл сохранён в карточке заявки</small></span><button type="button" className="button button-secondary button-compact" onClick={() => onDownloadRegistry(request.registry_file_path, request.registry_file_name)}><Download size={14}/> Скачать</button></div>
+              : <p className="registry-file-hint">Реестр прикладывается по желанию. Форматы: XLSX, XLS, CSV, ODS. Максимальный размер — 20 МБ.</p>}
+          </div>
 
           {occupied && <div className="message message-error"><AlertCircle size={16}/> Этот слот уже занят другой заявкой.</div>}
           {formError && <div className="message message-error"><AlertCircle size={16}/>{formError}</div>}

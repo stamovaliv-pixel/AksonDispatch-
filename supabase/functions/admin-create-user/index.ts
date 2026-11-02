@@ -43,10 +43,10 @@ Deno.serve(async (req) => {
     if (unitsError) return new Response('Could not validate business-unit assignment.', { status: 500, headers: cors })
     unitRows = data || []
   }
-  if (role === 'customer') {
+  if (business_unit_id) {
     const assigned = unitRows.find((unit) => unit.id === business_unit_id)
     if (!assigned || assigned.kind !== 'BE' || !assigned.is_active) {
-      return new Response('Customer must be assigned to an active business unit (BE).', { status: 400, headers: cors })
+      return new Response('Business unit must be an active business unit (BE).', { status: 400, headers: cors })
     }
   }
   if (default_from_id) {

@@ -29,7 +29,9 @@ export interface TransportRequest {
   id: string
   request_no: number
   requester_id: string
-  business_unit_id: string
+  business_unit_id: string | null
+  registry_file_path?: string | null
+  registry_file_name?: string | null
   transport_date: string
   slot_number: number
   from_unit_id: string | null

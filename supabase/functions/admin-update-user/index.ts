@@ -71,10 +71,10 @@ Deno.serve(async (req) => {
     if (error) return json({ error: 'Не удалось проверить выбранные БЕ.' }, 500)
     unitRows = data || []
   }
-  if (role === 'customer') {
+  if (businessUnitId) {
     const assigned = unitRows.find((unit) => unit.id === businessUnitId)
     if (!assigned || assigned.kind !== 'BE' || !assigned.is_active) {
-      return json({ error: 'Заказчику необходимо назначить действующую бизнес-единицу (БЕ).' }, 400)
+      return json({ error: 'Бизнес-единица должна быть действующей БЕ.' }, 400)
     }
   }
   if (defaultFromId) {
