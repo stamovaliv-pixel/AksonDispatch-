@@ -1044,13 +1044,13 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
             {([['goods', 'Товар', Package], ['equipment', 'Оборудование', Warehouse], ['packaging', 'Тара', Layers3]] as const).map(([value, label, Icon]) => <button type="button" key={value} className={cargo.includes(value) ? 'cargo-tile active' : 'cargo-tile'} onClick={() => toggleCargo(value)} disabled={!canEdit}><Icon size={23}/><strong>{label}</strong><span>{cargo.includes(value) ? 'Выбрано' : 'Добавить'}</span></button>)}
           </div>
 
-          {(cargo.includes('goods') || cargo.includes('packaging') || cargo.includes('equipment')) && <div className={`form-grid-two request-field-grid cargo-quantities request-quantity-grid ${cargo.includes('equipment') && !cargo.includes('goods') && !cargo.includes('packaging') ? 'equipment-only' : ''}`}>
+          {(cargo.includes('goods') || cargo.includes('packaging') || cargo.includes('equipment')) && <div className="form-grid-two request-field-grid cargo-quantities request-quantity-grid">
             {cargo.includes('goods') && <>
-              <label className="request-field" title="Количество паллетомест товарного запаса Сток."><span>Сток, паллетомест</span><input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} disabled={!canEdit}/></label>
-              <label className="request-field" title="Количество паллетомест категории КДК."><span>КДК, паллетомест</span><input type="number" min="0" value={kdk} onChange={(e) => setKdk(e.target.value)} disabled={!canEdit}/></label>
+              <label className="request-field request-quantity-field" title="Количество паллетомест товарного запаса Сток."><span>Сток, паллетомест</span><input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} disabled={!canEdit}/></label>
+              <label className="request-field request-quantity-field" title="Количество паллетомест категории Кросс док."><span>Кросс док, паллетомест</span><input type="number" min="0" value={kdk} onChange={(e) => setKdk(e.target.value)} disabled={!canEdit}/></label>
             </>}
-            {cargo.includes('packaging') && <label className="request-field" title="Количество единиц или мест тары в заявке."><span>Количество тары</span><input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!canEdit}/></label>}
-            {cargo.includes('equipment') && <label className="request-field" title="Укажите количество грузомест оборудования. Единица измерения — паллетомест."><span>Количество грузомест</span><input type="number" min="1" step="1" value={equipmentPalletPlaces} onChange={(e) => setEquipmentPalletPlaces(e.target.value)} placeholder="Например, 4" required disabled={!canEdit}/><small className="field-hint">Ед. измерения: паллетомест</small></label>}
+            {cargo.includes('packaging') && <label className="request-field request-quantity-field" title="Количество единиц тары в штуках."><span>Тара, шт.</span><input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!canEdit}/></label>}
+            {cargo.includes('equipment') && <label className="request-field request-quantity-field" title="Количество грузомест оборудования в паллетоместах."><span>Оборудование, паллетомест</span><input type="number" min="1" step="1" value={equipmentPalletPlaces} onChange={(e) => setEquipmentPalletPlaces(e.target.value)} placeholder="Например, 4" required disabled={!canEdit}/></label>}
           </div>}
 
           {occupied && <div className="message message-error"><AlertCircle size={16}/> Этот слот уже занят другой заявкой.</div>}
