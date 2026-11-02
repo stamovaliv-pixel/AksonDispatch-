@@ -28,6 +28,11 @@ Deno.serve(async (req) => {
   if (password.length > 128) {
     return new Response('Invalid input: password must not exceed 128 characters.', { status: 400, headers: cors })
   }
+  const { data: existingProfiles, error: usernameLookupError } = await admin.from('profiles').select('id,username')
+  if (usernameLookupError) return new Response('Could not validate username.', { status: 500, headers: cors })
+  if ((existingProfiles || []).some((profile) => profile.username.toLowerCase() === username.toLowerCase())) {
+    return new Response('Пользователь с таким логином уже существует. Логин не должен отличаться только регистром.', { status: 409, headers: cors })
+  }
 
   const unitIds = [business_unit_id, default_from_id].filter((value): value is string => typeof value === 'string' && value.length > 0)
   let unitRows: { id: string; kind: string; is_active: boolean }[] = []
@@ -58,6 +63,17 @@ Deno.serve(async (req) => {
   if (profileError) {
     await admin.auth.admin.deleteUser(created.user.id)
     return new Response(profileError.message, { status: 400, headers: cors })
+  }
+  const { error: auditError } = await admin.from('audit_log').insert({
+    actor_id: userData.user.id,
+    action: 'profile_create',
+    entity_type: 'profile',
+    entity_id: created.user.id,
+    details: { username, role, business_unit_id, default_from_id }
+  })
+  if (auditError) {
+    await admin.auth.admin.deleteUser(created.user.id)
+    return new Response(`Не удалось записать аудит создания пользователя: ${auditError.message}`, { status: 500, headers: cors })
   }
   return new Response(JSON.stringify({ id: created.user.id, username, role }), { headers: { ...cors, 'Content-Type': 'application/json' } })
 })
