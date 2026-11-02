@@ -483,7 +483,7 @@ function OverviewView({ profile, requests, occupancy, units, onNavigate, onReque
 function CalendarView({ month, days, requests, allRequests, occupancy, selectedDay, setSelectedDay, profile, units, onCreate, onOpen }: { month: Date; days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; occupancy: SlotOccupancy[]; selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[]; onCreate: (slot: number, date: string) => void; onOpen: (request: TransportRequest) => void }) {
   const chosen = requests.filter((r) => r.transport_date === selectedDay)
   const staff = profile.role !== 'customer'
-  return <div className="calendar-page"><section className="surface-card calendar-card"><div className="calendar-legend"><span><i className="legend-dot available"/> Свободно</span><span><i className="legend-dot booked"/> Занято</span><span><i className="legend-dot own"/> Моя заявка</span><span className="slots-note">3 общих слота на дату</span></div><div className="calendar-weekdays">{['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'].map((d) => <div key={d}>{d}</div>)}</div><div className="calendar-grid">{days.map((day) => { const key = iso(day); const inMonth = day.getMonth() === month.getMonth(); const dateRequests = allRequests.filter((r) => r.transport_date === key && r.status !== 'cancelled'); const busySlots = occupancy.filter((r) => r.transport_date === key); const isToday = key === iso(today); return <button key={key} className={`calendar-day ${!inMonth ? 'outside' : ''} ${selectedDay === key ? 'selected' : ''} ${isToday ? 'today' : ''}`} onClick={() => setSelectedDay(key)}><div className="calendar-day-head"><span>{day.getDate()}</span>{busySlots.length > 0 && <em>{busySlots.length}/3</em>}</div><div className="day-slots">{[1, 2, 3].map((slot) => { const found = dateRequests.find((r) => r.slot_number === slot); const busy = busySlots.some((r) => r.slot_number === slot); const own = found?.requester_id === profile.id; if (!busy) return <span key={slot} className="day-slot free" title={`Слот ${slot} свободен`}>{slot}</span>; return <span key={slot} className={`day-slot ${own ? 'own' : 'busy'} ${found ? statusClasses[found.status] : ''}`} title={found ? `Слот ${slot}: ${statusNames[found.status]}` : `Слот ${slot} занят`}>{slot}</span> })}</div></button> })}</div><div className="calendar-foot"><span><span className="online-dot"/> Занято слотов: {occupancy.length}</span><span>Выберите дату, чтобы посмотреть заявки</span></div></section><section className="surface-card selected-day-card"><div className="card-heading"><div><h3>{dateLabel(selectedDay)}</h3><p>Заявки на выбранную дату</p></div><div className="day-count">{chosen.length}<small>заявок</small></div></div><div className="selected-slots">{[1, 2, 3].map((slot) => { const r = allRequests.find((x) => x.transport_date === selectedDay && x.slot_number === slot && x.status !== 'cancelled'); const isBusy = occupancy.some((x) => x.transport_date === selectedDay && x.slot_number === slot); const own = r?.requester_id === profile.id; return <div key={slot} className={`selected-slot ${isBusy ? 'has-request' : 'empty-slot'}`}><div className="selected-slot-number">{slot}</div>{r ? <><div className="selected-slot-info"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>№{r.request_no} · {r.capacity_tons} т · {r.profiles?.username || 'Сотрудник'}</small></div><div className="selected-slot-actions"><StatusBadge status={r.status}/>{(staff || (own && r.status === 'created')) && <button className="icon-button small" onClick={() => onOpen(r)} title="Открыть заявку"><Pencil size={14}/></button>}</div></> : isBusy ? <><div className="selected-slot-info"><strong>Слот занят</strong><small>Время зарезервировано другой заявкой</small></div></> : <><div className="selected-slot-info"><strong>Слот свободен</strong><small>Нет активной заявки на эту дату</small></div>{(profile.role === 'customer' || profile.role === 'admin') && <button className="button button-outline button-compact" onClick={() => onCreate(slot, selectedDay)}><Plus size={14}/> Заявка</button>}</>}</div> })}</div><div className="selected-day-tip"><CircleHelp size={15}/>{profile.role === 'customer' ? 'Вы можете создать заявку в свободном слоте. После создания изменить её можно до обработки.' : profile.role === 'admin' ? 'Администратор может создавать заявки от имени любого активного заказчика и редактировать существующие.' : 'Вы можете открыть заявку, изменить её данные или обновить статус в разделе «Заявки».'}</div></section></div>
+  return <div className="calendar-page"><section className="surface-card calendar-card"><div className="calendar-legend"><span><i className="legend-dot available"/> Свободно</span><span><i className="legend-dot booked"/> Занято</span><span><i className="legend-dot own"/> Моя заявка</span><span><i className="legend-dot created"/> Создано</span><span className="slots-note">3 общих слота на дату</span></div><div className="calendar-weekdays">{['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'].map((d) => <div key={d}>{d}</div>)}</div><div className="calendar-grid">{days.map((day) => { const key = iso(day); const inMonth = day.getMonth() === month.getMonth(); const dateRequests = allRequests.filter((r) => r.transport_date === key && r.status !== 'cancelled'); const busySlots = occupancy.filter((r) => r.transport_date === key); const occupiedCount = new Set([...busySlots.map((r) => r.slot_number), ...dateRequests.map((r) => r.slot_number)]).size; const isToday = key === iso(today); return <button key={key} className={`calendar-day ${!inMonth ? 'outside' : ''} ${selectedDay === key ? 'selected' : ''} ${isToday ? 'today' : ''}`} onClick={() => setSelectedDay(key)}><div className="calendar-day-head"><span>{day.getDate()}</span>{occupiedCount > 0 && <em>{occupiedCount}/3</em>}</div><div className="day-slots">{[1, 2, 3].map((slot) => { const found = dateRequests.find((r) => r.slot_number === slot); const busy = busySlots.some((r) => r.slot_number === slot) || !!found; const own = found?.requester_id === profile.id; if (!busy) return <span key={slot} className="day-slot free" title={`Слот ${slot} свободен`}>{slot}</span>; const created = found?.status === 'created'; return <span key={slot} className={`day-slot ${created ? 'request-created' : own ? 'own' : 'busy'}`} title={found ? `Слот ${slot}: заявка №${found.request_no} · ${statusNames[found.status]}` : `Слот ${slot} занят`}>{slot}</span> })}</div></button> })}</div><div className="calendar-foot"><span><span className="online-dot"/> Занято слотов: {occupancy.length}</span><span>Выберите дату, чтобы посмотреть заявки</span></div></section><section className="surface-card selected-day-card"><div className="card-heading"><div><h3>{dateLabel(selectedDay)}</h3><p>Заявки на выбранную дату</p></div><div className="day-count">{chosen.length}<small>заявок</small></div></div><div className="selected-slots">{[1, 2, 3].map((slot) => { const r = allRequests.find((x) => x.transport_date === selectedDay && x.slot_number === slot && x.status !== 'cancelled'); const isBusy = occupancy.some((x) => x.transport_date === selectedDay && x.slot_number === slot) || !!r; const own = r?.requester_id === profile.id; return <div key={slot} className={`selected-slot ${isBusy ? 'has-request' : 'empty-slot'}`}><div className="selected-slot-number">{slot}</div>{r ? <><div className="selected-slot-info"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>№{r.request_no} · {r.capacity_tons} т · {r.profiles?.username || 'Сотрудник'}</small></div><div className="selected-slot-actions"><StatusBadge status={r.status}/>{(staff || (own && r.status === 'created')) && <button className="icon-button small" onClick={() => onOpen(r)} title="Открыть заявку"><Pencil size={14}/></button>}</div></> : isBusy ? <><div className="selected-slot-info"><strong>Слот занят</strong><small>Время зарезервировано другой заявкой</small></div></> : <><div className="selected-slot-info"><strong>Слот свободен</strong><small>Нет активной заявки на эту дату</small></div>{(profile.role === 'customer' || profile.role === 'admin') && <button className="button button-outline button-compact" onClick={() => onCreate(slot, selectedDay)}><Plus size={14}/> Заявка</button>}</>}</div> })}</div><div className="selected-day-tip"><CircleHelp size={15}/>{profile.role === 'customer' ? 'Вы можете создать заявку в свободном слоте. После создания изменить её можно до обработки.' : profile.role === 'admin' ? 'Администратор может создавать заявки от имени любого активного заказчика и редактировать существующие.' : 'Вы можете открыть заявку, изменить её данные или обновить статус в разделе «Заявки».'}</div></section></div>
 }
 
 function RequestsView({ requests, units, profile, search, setSearch, statusFilter, setStatusFilter, onStatus, onEdit, onCancel }: { requests: TransportRequest[]; units: BusinessUnit[]; profile: Profile; search: string; setSearch: (v: string) => void; statusFilter: 'all' | RequestStatus; setStatusFilter: (v: 'all' | RequestStatus) => void; onStatus: (r: TransportRequest, s: RequestStatus) => void; onEdit: (r: TransportRequest) => void; onCancel: (r: TransportRequest) => void }) {
@@ -678,7 +678,112 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
       await onSave({ requester_id: profile.role === 'admin' ? requesterId : undefined, transport_date: date, slot_number: slotNo, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0) }, request)
     } catch (e) { setFormError(errorText(e)) }
   }
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="request-modal" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}><div className="modal-heading"><div><span className="modal-eyebrow">ТРАНСПОРТНАЯ ЗАЯВКА</span><h2>{request ? `Заявка №${request.request_no}` : 'Новая заявка'}</h2><p>{profile.role === 'admin' ? (people.find((person) => person.id === requesterId)?.username || profile.username) : profile.username} · {request ? 'Редактирование данных' : 'Заполните параметры перевозки'}</p></div><button type="button" className="icon-button" onClick={onClose}><X size={18}/></button></div><div className="modal-body">{profile.role === 'admin' && <><div className="form-section-label">Заказчик заявки</div><label className="modal-full-field">Пользователь<select value={requesterId} onChange={(e) => { const nextId = e.target.value; setRequesterId(nextId); const nextPerson = people.find((person) => person.id === nextId); if (!request) setFrom(be.find((unit) => unit.id === nextPerson?.default_from_id)?.id || be.find((unit) => unit.id === nextPerson?.business_unit_id)?.id || '') }} required disabled={!canEdit}><option value="">Выберите заказчика</option>{customerOptions.map((person) => <option key={person.id} value={person.id}>{person.username}{!person.is_active ? ' · отключён' : ''} — {units.find((unit) => unit.id === person.business_unit_id)?.code || 'БЕ не назначена'}</option>)}</select></label></>}<div className="form-section-label">Дата и слот</div><div className="form-grid-two"><label>Дата перевозки<input type="date" value={date} min={!request ? minimumDate : undefined} onChange={(e) => setDate(e.target.value)} required disabled={!canEdit}/><small className="field-hint">Минимальный срок подачи: {bookingAdvanceDays} дн.</small></label><label>Транспортный слот<select value={slotNo} onChange={(e) => setSlotNo(Number(e.target.value))} disabled={!canEdit}>{[1, 2, 3].map((n) => <option value={n} key={n}>Слот {n}</option>)}</select></label></div><div className="form-section-label">Маршрут</div><div className="form-grid-two"><label>Откуда<select value={from} onChange={(e) => setFrom(e.target.value)} required disabled={!canEdit}><option value="">Выберите БЕ</option>{be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select></label>{from === 'other' && <label>Адрес отправления<input value={fromOther} onChange={(e) => setFromOther(e.target.value)} required disabled={!canEdit}/></label>}<label>Куда<select value={to} onChange={(e) => setTo(e.target.value)} required disabled={!canEdit}><option value="">Выберите БЕ или РЦ</option>{destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select></label>{to === 'other' && <label>Адрес назначения<input value={toOther} onChange={(e) => setToOther(e.target.value)} required disabled={!canEdit}/></label>}</div><div className="form-section-label">Параметры транспорта</div><div className="form-grid-two"><div className="field-block"><span>Грузоподъёмность</span><div className="segmented-options">{['1.5', '5', '10', '20'].map((value) => <button type="button" key={value} className={capacity === value ? 'selected' : ''} onClick={() => setCapacity(value)} disabled={!canEdit}>{value.replace('.', ',')} т</button>)}</div></div><div className="field-block"><span>Тип погрузки</span><div className="segmented-options">{[['rear', 'Задняя'], ['side', 'Боковая']].map(([value, label]) => <button type="button" key={value} className={loadingType === value ? 'selected' : ''} onClick={() => setLoadingType(value as 'rear' | 'side')} disabled={!canEdit}>{label}</button>)}</div></div></div><div className="form-section-label">Состав груза</div><div className="cargo-tiles">{[['goods', 'Товар', Package], ['equipment', 'Оборудование', Warehouse], ['packaging', 'Тара', Layers3]].map(([value, label, Icon]: any) => <button type="button" key={value} className={cargo.includes(value) ? 'cargo-tile active' : 'cargo-tile'} onClick={() => toggleCargo(value)} disabled={!canEdit}><Icon size={23}/><strong>{label}</strong><span>{cargo.includes(value) ? 'Выбрано' : 'Добавить'}</span></button>)}</div>{(cargo.includes('goods') || cargo.includes('packaging')) && <div className="form-grid-two cargo-quantities">{cargo.includes('goods') && <><label>Сток, паллетомест<input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} disabled={!canEdit}/></label><label>КДК, паллетомест<input type="number" min="0" value={kdk} onChange={(e) => setKdk(e.target.value)} disabled={!canEdit}/></label></>}{cargo.includes('packaging') && <label>Количество тары<input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!canEdit}/></label>}</div>}{occupied && <div className="message message-error"><AlertCircle size={16}/> Этот слот уже занят другой заявкой.</div>}{formError && <div className="message message-error"><AlertCircle size={16}/>{formError}</div>}</div><div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Закрыть</button>{canEdit && <button className="button button-primary" disabled={saving || !!occupied}>{saving ? 'Сохранение…' : 'Сохранить заявку'} <ArrowRight size={16}/></button>}</div></form></div>
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <form className="request-modal" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-heading">
+          <div>
+            <span className="modal-eyebrow">ТРАНСПОРТНАЯ ЗАЯВКА</span>
+            <h2>{request ? `Заявка №${request.request_no}` : 'Новая заявка'}</h2>
+            <p>{profile.role === 'admin' ? (people.find((person) => person.id === requesterId)?.username || profile.username) : profile.username} · {request ? 'Редактирование данных' : 'Заполните параметры перевозки'}</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Закрыть окно"><X size={18}/></button>
+        </div>
+
+        <div className="modal-body request-modal-body">
+          {profile.role === 'admin' && <>
+            <div className="form-section-label">Заказчик заявки</div>
+            <label className="modal-full-field">
+              Пользователь
+              <select value={requesterId} onChange={(e) => {
+                const nextId = e.target.value
+                setRequesterId(nextId)
+                const nextPerson = people.find((person) => person.id === nextId)
+                if (!request) setFrom(be.find((unit) => unit.id === nextPerson?.default_from_id)?.id || be.find((unit) => unit.id === nextPerson?.business_unit_id)?.id || '')
+              }} required disabled={!canEdit}>
+                <option value="">Выберите заказчика</option>
+                {customerOptions.map((person) => <option key={person.id} value={person.id}>{person.username}{!person.is_active ? ' · отключён' : ''} — {units.find((unit) => unit.id === person.business_unit_id)?.code || 'БЕ не назначена'}</option>)}
+              </select>
+            </label>
+          </>}
+
+          <div className="form-section-label">Дата и слот</div>
+          <div className="form-grid-two request-field-grid">
+            <label className="request-field">
+              <span>Дата перевозки</span>
+              <input type="date" value={date} min={!request ? minimumDate : undefined} onChange={(e) => setDate(e.target.value)} required disabled={!canEdit}/>
+              <small className="field-hint">Минимальный срок подачи: {bookingAdvanceDays} дн.</small>
+            </label>
+            <label className="request-field">
+              <span>Транспортный слот</span>
+              <select value={slotNo} onChange={(e) => setSlotNo(Number(e.target.value))} disabled={!canEdit}>
+                {[1, 2, 3].map((n) => <option value={n} key={n}>Слот {n}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div className="form-section-label">Маршрут</div>
+          <div className="form-grid-two request-field-grid">
+            <div className="request-field-group">
+              <label htmlFor="request-from">Откуда</label>
+              <select id="request-from" value={from} onChange={(e) => setFrom(e.target.value)} required disabled={!canEdit}>
+                <option value="">Выберите БЕ</option>
+                {be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}
+                <option value="other">Другой адрес</option>
+              </select>
+              {from === 'other' && <label className="request-subfield">Адрес отправления<input value={fromOther} onChange={(e) => setFromOther(e.target.value)} required disabled={!canEdit}/></label>}
+            </div>
+            <div className="request-field-group">
+              <label htmlFor="request-to">Куда</label>
+              <select id="request-to" value={to} onChange={(e) => setTo(e.target.value)} required disabled={!canEdit}>
+                <option value="">Выберите БЕ или РЦ</option>
+                {destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}
+                <option value="other">Другой адрес</option>
+              </select>
+              {to === 'other' && <label className="request-subfield">Адрес назначения<input value={toOther} onChange={(e) => setToOther(e.target.value)} required disabled={!canEdit}/></label>}
+            </div>
+          </div>
+
+          <div className="form-section-label">Параметры транспорта</div>
+          <div className="form-grid-two request-field-grid">
+            <div className="field-block request-option-field">
+              <span>Грузоподъёмность</span>
+              <div className="segmented-options">
+                {['1.5', '5', '10', '20'].map((value) => <button type="button" key={value} className={capacity === value ? 'selected' : ''} onClick={() => setCapacity(value)} disabled={!canEdit}>{value.replace('.', ',')} т</button>)}
+              </div>
+            </div>
+            <div className="field-block request-option-field">
+              <span>Тип погрузки</span>
+              <div className="segmented-options">
+                {(['rear', 'side'] as const).map((value) => <button type="button" key={value} className={loadingType === value ? 'selected' : ''} onClick={() => setLoadingType(value)} disabled={!canEdit}>{value === 'rear' ? 'Задняя' : 'Боковая'}</button>)}
+              </div>
+            </div>
+          </div>
+
+          <div className="form-section-label">Состав груза</div>
+          <div className="cargo-tiles request-cargo-tiles">
+            {([['goods', 'Товар', Package], ['equipment', 'Оборудование', Warehouse], ['packaging', 'Тара', Layers3]] as const).map(([value, label, Icon]) => <button type="button" key={value} className={cargo.includes(value) ? 'cargo-tile active' : 'cargo-tile'} onClick={() => toggleCargo(value)} disabled={!canEdit}><Icon size={23}/><strong>{label}</strong><span>{cargo.includes(value) ? 'Выбрано' : 'Добавить'}</span></button>)}
+          </div>
+
+          {(cargo.includes('goods') || cargo.includes('packaging')) && <div className="form-grid-two request-field-grid cargo-quantities request-quantity-grid">
+            {cargo.includes('goods') && <>
+              <label className="request-field"><span>Сток, паллетомест</span><input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} disabled={!canEdit}/></label>
+              <label className="request-field"><span>КДК, паллетомест</span><input type="number" min="0" value={kdk} onChange={(e) => setKdk(e.target.value)} disabled={!canEdit}/></label>
+            </>}
+            {cargo.includes('packaging') && <label className="request-field"><span>Количество тары</span><input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!canEdit}/></label>}
+          </div>}
+
+          {occupied && <div className="message message-error"><AlertCircle size={16}/> Этот слот уже занят другой заявкой.</div>}
+          {formError && <div className="message message-error"><AlertCircle size={16}/>{formError}</div>}
+        </div>
+
+        <div className="modal-actions">
+          <button type="button" className="button button-secondary" onClick={onClose}>Закрыть</button>
+          {canEdit && <button className="button button-primary" disabled={saving || !!occupied}>{saving ? 'Сохранение…' : 'Сохранить заявку'} <ArrowRight size={16}/></button>}
+        </div>
+      </form>
+    </div>
+  )
 }
 
 function MonthControls({ month, setMonth }: { month: Date; setMonth: (v: Date) => void }) {

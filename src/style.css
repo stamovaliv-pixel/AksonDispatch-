@@ -274,3 +274,107 @@ html[data-theme="dark"] .history-entry-icon { background: #1d3546; color: #8bc7e
 }
 
 .history-load-more { display: flex; justify-content: center; padding: 5px 0 12px; }
+
+/* Request modal alignment and clear calendar marker for newly created requests */
+.request-modal { width: min(760px, 100%); }
+.request-modal .request-modal-body { padding: 20px 24px 6px; }
+.request-modal .modal-full-field { margin-bottom: 17px; gap: 7px; }
+.request-modal .modal-full-field select,
+.request-modal .request-field input,
+.request-modal .request-field select,
+.request-modal .request-field-group select,
+.request-modal .request-subfield input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 41px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 11px;
+  outline: 0;
+  font: inherit;
+  font-size: 11px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.request-modal .request-field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  column-gap: 18px;
+  row-gap: 14px;
+}
+.request-modal .request-field,
+.request-modal .request-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  color: #68768a;
+  font-size: 10px;
+  font-weight: 600;
+}
+.request-modal .request-field > span,
+.request-modal .request-field-group > label {
+  display: block;
+  margin: 0;
+  color: #68768a;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.request-modal .request-subfield {
+  display: grid;
+  gap: 7px;
+  margin-top: 3px;
+  color: #68768a;
+  font-size: 9px;
+  font-weight: 600;
+}
+.request-modal .request-field input:focus,
+.request-modal .request-field select:focus,
+.request-modal .request-field-group select:focus,
+.request-modal .request-subfield input:focus,
+.request-modal .modal-full-field select:focus {
+  border-color: #7db6d3;
+  box-shadow: 0 0 0 3px rgba(56, 147, 194, .12);
+}
+.request-modal .field-hint { margin: -1px 0 0; line-height: 1.4; }
+.request-modal .request-option-field { min-width: 0; }
+.request-modal .request-option-field > span { margin-bottom: 8px; }
+.request-modal .request-option-field .segmented-options { gap: 7px; }
+.request-modal .request-option-field .segmented-options button { min-height: 40px; font-size: 10px; }
+.request-modal .request-cargo-tiles { gap: 11px; }
+.request-modal .request-cargo-tiles .cargo-tile { min-height: 94px; align-content: center; }
+.request-modal .request-quantity-grid { margin-top: 14px; }
+.request-modal .modal-actions { padding-left: 24px; padding-right: 24px; }
+.legend-dot.created { background: #367fbd; }
+.day-slot.request-created {
+  background: #367fbd !important;
+  color: #fff !important;
+  border: 1px solid #286da7;
+  box-shadow: inset 0 -2px 0 rgba(17, 62, 102, .2), 0 0 0 1px rgba(54, 127, 189, .14);
+  font-weight: 800;
+}
+html[data-theme="dark"] .request-modal .modal-full-field select,
+html[data-theme="dark"] .request-modal .request-field input,
+html[data-theme="dark"] .request-modal .request-field select,
+html[data-theme="dark"] .request-modal .request-field-group select,
+html[data-theme="dark"] .request-modal .request-subfield input {
+  background: #111923;
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+html[data-theme="dark"] .day-slot.request-created {
+  background: #347fb9 !important;
+  color: #fff !important;
+  border-color: #6db5e8;
+  box-shadow: 0 0 0 1px rgba(109, 181, 232, .22);
+}
+@media (max-width: 620px) {
+  .request-modal .request-modal-body { padding: 16px 16px 5px; }
+  .request-modal .request-field-grid { grid-template-columns: 1fr; row-gap: 12px; }
+  .request-modal .modal-actions { padding-left: 16px; padding-right: 16px; }
+  .request-modal .request-cargo-tiles { gap: 7px; }
+  .request-modal .request-cargo-tiles .cargo-tile { min-height: 82px; }
+}
