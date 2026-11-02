@@ -10,21 +10,25 @@ import {
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRequest } from './types'
 
-type View = 'overview' | 'calendar' | 'requests' | 'users' | 'directory' | 'settings' | 'history'
+type View = 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'directory' | 'settings' | 'history'
 type RequestDraft = {
   transport_date: string; slot_number: number; from_unit_id: string | null; from_other_address: string | null;
   to_unit_id: string | null; to_other_address: string | null; capacity_tons: number; loading_type: 'rear' | 'side';
-  cargo_types: string[]; stock_pallets: number; kdk_pallets: number; packaging_qty: number; requester_id?: string
+  cargo_types: string[]; stock_pallets: number; kdk_pallets: number; packaging_qty: number; equipment_pallet_places: number; requester_id?: string
 }
 type UnitDraft = { id?: string | null; code: string; name: string; kind: 'BE' | 'RC'; address: string }
 type AuditRecord = { id: number; actor_id: string | null; action: string; entity_type: string; entity_id: string | null; details: Record<string, any>; created_at: string; actor_username?: string | null }
 type RoleLimitValues = Record<Role, string>
 type SlotOccupancy = { transport_date: string; slot_number: number }
+type CalendarSlot = { transport_date: string; slot_number: number; status: RequestStatus; from_be_code: string }
+type ReportRow = { section: 'summary' | 'customer' | 'from' | 'to' | 'cargo' | 'closing_speed' | 'status'; label: string; request_count: number; average_close_days: number | null; closed_count: number; open_count: number }
 
 const roleNames: Record<Role, string> = { customer: 'Заказчик', dispatcher: 'Диспетчер', utz: 'УТЗ', admin: 'Администратор' }
 const roleDescriptions: Record<Role, string> = {
-  customer: 'Создание и просмотр заявок своей БЕ', dispatcher: 'Работа с заявками и слотами',
-  utz: 'Контроль и координация перевозок', admin: 'Полное администрирование портала'
+  customer: 'Создание, просмотр и отмена своих заявок до начала обработки',
+  dispatcher: 'Редактирование всех заявок, управление статусами и история',
+  utz: 'Просмотр и контроль всех заявок без редактирования',
+  admin: 'Полное администрирование портала'
 }
 const statusNames: Record<RequestStatus, string> = { created: 'Создана', search: 'Поиск транспорта', confirmed: 'Подтверждена', completed: 'Выполнена', cancelled: 'Отменена' }
 const statusClasses: Record<RequestStatus, string> = { created: 'status-created', search: 'status-search', confirmed: 'status-confirmed', completed: 'status-completed', cancelled: 'status-cancelled' }
@@ -43,6 +47,7 @@ function App() {
   const [units, setUnits] = useState<BusinessUnit[]>([])
   const [requests, setRequests] = useState<TransportRequest[]>([])
   const [occupancy, setOccupancy] = useState<SlotOccupancy[]>([])
+  const [calendarSlots, setCalendarSlots] = useState<CalendarSlot[]>([])
   const [people, setPeople] = useState<Profile[]>([])
   const [view, setView] = useState<View>('overview')
   const [month, setMonth] = useState(new Date(today.getFullYear(), today.getMonth(), 1))
@@ -76,11 +81,37 @@ function App() {
   const [historyEntity, setHistoryEntity] = useState('all')
   const [historyFrom, setHistoryFrom] = useState('')
   const [historyTo, setHistoryTo] = useState('')
+  const [reportsFrom, setReportsFrom] = useState(iso(new Date(today.getFullYear(), today.getMonth(), 1)))
+  const [reportsTo, setReportsTo] = useState(iso(today))
+  const [reportRows, setReportRows] = useState<ReportRow[]>([])
+  const [reportsLoading, setReportsLoading] = useState(false)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem('akson-transport-theme', theme) } catch { /* private browsing */ }
   }, [theme])
+  // Native hover hints are applied to every input, selector and action button.
+  // Explicit, hand-written title attributes always take precedence.
+  useEffect(() => {
+    if (!profile) return
+    const root = document.querySelector('.app-shell')
+    if (!root) return
+    const addHints = () => {
+      root.querySelectorAll<HTMLElement>('button:not([title]), input:not([title]), select:not([title]), textarea:not([title])').forEach((control) => {
+        const aria = control.getAttribute('aria-label') || ''
+        const placeholder = control.getAttribute('placeholder') || ''
+        const label = control.closest('label')?.textContent?.replace(/\s+/g, ' ').trim() || ''
+        const caption = control.tagName === 'BUTTON'
+          ? (aria || control.textContent?.replace(/\s+/g, ' ').trim() || 'Действие')
+          : (label || placeholder || (control.tagName === 'SELECT' ? 'Список выбора' : 'Поле ввода'))
+        control.title = control.tagName === 'BUTTON' ? `Действие: ${caption}` : `Поле: ${caption}. Наведите курсор, чтобы прочитать подсказку.`
+      })
+    }
+    addHints()
+    const observer = new MutationObserver(addHints)
+    observer.observe(root, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [profile, view, requestModal.open, showUserForm, unitFormOpen, editingPerson])
 
   useEffect(() => {
     if (!supabase) return
@@ -110,10 +141,15 @@ function App() {
     if (profile.role === 'admin') void loadPeople()
   }, [profile])
   useEffect(() => {
-    if (profile?.role !== 'admin' || view !== 'history') return
+    if (!profile || !['dispatcher', 'admin'].includes(profile.role) || view !== 'history') return
     const timer = window.setTimeout(() => { void loadHistory() }, 250)
     return () => window.clearTimeout(timer)
   }, [profile, view, historySearch, historyEntity, historyFrom, historyTo])
+  useEffect(() => {
+    if (profile && ['dispatcher', 'admin'].includes(profile.role) && view === 'reports' && reportRows.length === 0) {
+      void loadReports()
+    }
+  }, [profile, view])
 
   async function loadData(targetMonth: Date = month) {
     if (!supabase || !profile) return
@@ -121,13 +157,14 @@ function App() {
     const fromDate = iso(new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1))
     const toDate = iso(new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0))
     let unitsQuery = supabase.from('business_units').select('*').order('code')
-    if (profile.role !== 'admin') unitsQuery = unitsQuery.eq('is_active', true)
-    const [unitResult, requestResult, occupancyResult] = await Promise.all([
+    if (profile.role === 'customer') unitsQuery = unitsQuery.eq('is_active', true)
+    const [unitResult, requestResult, occupancyResult, calendarSlotResult] = await Promise.all([
       unitsQuery,
       supabase.from('transport_requests')
-        .select('*, profiles!transport_requests_requester_id_fkey(username), business_units!transport_requests_business_unit_id_fkey(code,name), request_cargo(cargo_type,stock_pallets,kdk_pallets,packaging_qty)')
+        .select('*, profiles!transport_requests_requester_id_fkey(username), business_units!transport_requests_business_unit_id_fkey(code,name), request_cargo(cargo_type,stock_pallets,kdk_pallets,packaging_qty,equipment_pallet_places)')
         .gte('transport_date', fromDate).lte('transport_date', toDate).order('transport_date').order('slot_number'),
-      supabase.rpc('get_slot_occupancy', { p_from_date: fromDate, p_to_date: toDate })
+      supabase.rpc('get_slot_occupancy', { p_from_date: fromDate, p_to_date: toDate }),
+      supabase.rpc('get_calendar_slot_summary', { p_from_date: fromDate, p_to_date: toDate })
     ])
     if (unitResult.error) setError(`Справочник: ${unitResult.error.message}`)
     else setUnits((unitResult.data || []) as BusinessUnit[])
@@ -135,6 +172,8 @@ function App() {
     else setRequests((requestResult.data || []) as TransportRequest[])
     if (occupancyResult.error) setError(`Занятость слотов: ${occupancyResult.error.message}. Примените миграцию 0002_admin_workspace.sql.`)
     else setOccupancy((occupancyResult.data || []) as SlotOccupancy[])
+    if (calendarSlotResult.error) setError(`Сводка календаря: ${calendarSlotResult.error.message}. Примените миграцию 0004_role_permissions_calendar_reports.sql.`)
+    else setCalendarSlots((calendarSlotResult.data || []) as CalendarSlot[])
     setLoading(false)
   }
 
@@ -162,7 +201,7 @@ function App() {
   }
 
   async function loadHistory(loadMore = false) {
-    if (!supabase || profile?.role !== 'admin' || (loadMore && historyLoadingMore)) return
+    if (!supabase || !profile || !['dispatcher', 'admin'].includes(profile.role) || (loadMore && historyLoadingMore)) return
     if (loadMore) setHistoryLoadingMore(true)
     const offset = loadMore ? auditRows.length : 0
     const { data, error: auditError } = await supabase.rpc('admin_search_audit', {
@@ -173,13 +212,26 @@ function App() {
       p_offset: offset,
       p_limit: 500
     })
-    if (auditError) setError(`История изменений: ${auditError.message}. Проверьте миграцию 0003_admin_controls_audit.sql.`)
+    if (auditError) setError(`История изменений: ${auditError.message}. Проверьте миграции 0003_admin_controls_audit.sql и 0004_role_permissions_calendar_reports.sql.`)
     else {
       const batch = (data || []) as AuditRecord[]
       setAuditRows((current) => loadMore ? [...current, ...batch] : batch)
       setHistoryHasMore(batch.length === 500)
     }
     if (loadMore) setHistoryLoadingMore(false)
+  }
+
+  async function loadReports() {
+    if (!supabase || !profile || !['dispatcher', 'admin'].includes(profile.role)) return
+    if (!reportsFrom || !reportsTo || reportsFrom > reportsTo) { setError('Начальная дата отчёта не может быть позже конечной.'); return }
+    setReportsLoading(true); setError('')
+    const { data, error: reportError } = await supabase.rpc('get_transport_report_data', {
+      p_from_date: reportsFrom,
+      p_to_date: reportsTo
+    })
+    if (reportError) setError(`Не удалось сформировать отчёт: ${reportError.message}. Проверьте миграцию 0004_role_permissions_calendar_reports.sql.`)
+    else setReportRows((data || []) as ReportRow[])
+    setReportsLoading(false)
   }
 
   async function saveSettings(event: FormEvent) {
@@ -216,6 +268,9 @@ function App() {
 
   async function saveRequest(payload: RequestDraft, existing?: TransportRequest) {
     if (!supabase || !profile) return
+    const mayCreate = profile.role === 'customer' || profile.role === 'admin'
+    const mayEdit = profile.role === 'admin' || profile.role === 'dispatcher' || (profile.role === 'customer' && !!existing && existing.requester_id === profile.id && existing.status === 'created')
+    if (existing ? !mayEdit : !mayCreate) { setError('У вашей роли нет прав на это действие.'); return }
     setSaving(true); setError('')
     try {
       const adminMode = profile.role === 'admin'
@@ -245,7 +300,8 @@ function App() {
       if (deleteError) throw deleteError
       const cargoRows: CargoLine[] = payload.cargo_types.map((cargoType) => ({
         cargo_type: cargoType as CargoLine['cargo_type'], stock_pallets: payload.stock_pallets,
-        kdk_pallets: payload.kdk_pallets, packaging_qty: payload.packaging_qty
+        kdk_pallets: payload.kdk_pallets, packaging_qty: payload.packaging_qty,
+        equipment_pallet_places: cargoType === 'equipment' ? payload.equipment_pallet_places : 0
       }))
       if (cargoRows.length) {
         const { error: cargoError } = await supabase.from('request_cargo').insert(cargoRows.map((row) => ({ ...row, request_id: id })))
@@ -256,20 +312,27 @@ function App() {
       setRequestModal({ open: false }); setMonth(savedMonth); setSelectedDay(payload.transport_date); setView('calendar')
       setNotice(existing ? 'Заявка обновлена.' : 'Заявка создана.')
       await loadData(savedMonth)
-      if (adminMode) await loadHistory()
+      if (profile.role === 'dispatcher' || profile.role === 'admin') await loadHistory()
     } catch (e) { setError(errorText(e)) }
     finally { setSaving(false) }
   }
 
   async function changeStatus(request: TransportRequest, status: RequestStatus) {
-    if (!supabase) return
+    if (!supabase || !profile) return
+    const canStaffChange = profile.role === 'dispatcher' || profile.role === 'admin'
+    const canCustomerCancel = profile.role === 'customer' && request.requester_id === profile.id && request.status === 'created' && status === 'cancelled'
+    if (!canStaffChange && !canCustomerCancel) { setError('У вашей роли нет прав на изменение статуса этой заявки.'); return }
     setError('')
     const { error: updateError } = await supabase.from('transport_requests').update({ status }).eq('id', request.id)
     if (updateError) setError(updateError.message)
-    else { setNotice(`Статус заявки №${request.request_no} изменён.`); await loadData(); if (profile?.role === 'admin') await loadHistory() }
+    else { setNotice(`Статус заявки №${request.request_no} изменён.`); await loadData(); if (profile.role === 'dispatcher' || profile.role === 'admin') await loadHistory() }
   }
 
   async function cancelRequest(request: TransportRequest) {
+    if (!profile) return
+    const permitted = profile.role === 'dispatcher' || profile.role === 'admin'
+      || (profile.role === 'customer' && request.requester_id === profile.id && request.status === 'created')
+    if (!permitted) { setError('У вашей роли нет прав на отмену этой заявки.'); return }
     if (!supabase || !window.confirm(`Отменить заявку №${request.request_no}?`)) return
     await changeStatus(request, 'cancelled')
   }
@@ -387,19 +450,22 @@ function App() {
   const ownRequests = requests.filter((r) => profile?.role !== 'customer' || r.requester_id === profile?.id)
   const selectedRequests = ownRequests.filter((r) => r.transport_date === selectedDay)
   const isAdmin = profile?.role === 'admin'
-  const pageTitles: Record<View, string> = { overview: 'Обзор', calendar: 'Календарь транспорта', requests: 'Заявки на транспорт', users: 'Пользователи', directory: 'Справочник БЕ и РЦ', settings: 'Настройки', history: 'История изменений' }
+  const pageTitles: Record<View, string> = { overview: 'Обзор', calendar: 'Календарь транспорта', requests: 'Заявки на транспорт', reports: 'Отчёты', users: 'Пользователи', directory: 'Справочник БЕ и РЦ', settings: 'Настройки', history: 'История изменений' }
 
   if (!supabaseConfigured) return <SetupScreen />
   if (!session || !profile) return <LoginScreen login={login} password={password} setLogin={setLogin} setPassword={setPassword} signIn={signIn} busy={loginBusy} error={error} />
 
-  const navItems: { key: View; label: string; icon: typeof LayoutDashboard; admin?: boolean }[] = [
+  const canViewStaffPages = profile.role === 'dispatcher' || profile.role === 'admin'
+  const canCreateRequest = profile.role === 'customer' || profile.role === 'admin'
+  const navItems: { key: View; label: string; icon: typeof LayoutDashboard; admin?: boolean; staff?: boolean }[] = [
     { key: 'overview', label: 'Обзор', icon: LayoutDashboard },
     { key: 'calendar', label: 'Календарь', icon: CalendarDays },
     { key: 'requests', label: 'Заявки', icon: FileSpreadsheet },
+    { key: 'reports', label: 'Отчёты', icon: Activity, staff: true },
     { key: 'users', label: 'Пользователи', icon: Users, admin: true },
     { key: 'directory', label: 'Справочник', icon: Building2, admin: true },
     { key: 'settings', label: 'Настройки', icon: SlidersHorizontal, admin: true },
-    { key: 'history', label: 'История', icon: HistoryIcon, admin: true }
+    { key: 'history', label: 'История', icon: HistoryIcon, staff: true }
   ]
 
   return <div className="app-shell">
@@ -413,7 +479,7 @@ function App() {
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
         <nav className="side-nav">
-          {navItems.filter((item) => !item.admin || isAdmin).map((item) => {
+          {navItems.filter((item) => (!item.admin || isAdmin) && (!item.staff || canViewStaffPages)).map((item) => {
             const Icon = item.icon
             return <button key={item.key} className={`nav-link ${view === item.key ? 'active' : ''}`} onClick={() => { setView(item.key); setSidebarOpen(false); setError(''); setNotice('') }}><Icon size={18} /><span>{item.label}</span>{item.key === 'requests' && activeRequests.length > 0 && <em>{activeRequests.length}</em>}</button>
           })}
@@ -421,16 +487,17 @@ function App() {
         <div className="sidebar-bottom"><div className="sidebar-help"><div className="help-icon"><ShieldCheck size={17} /></div><strong>Рабочая система</strong><p>Доступ к заявкам ограничен вашей ролью.</p></div><div className="sidebar-foot"><span className="online-dot" /> Supabase подключён</div></div>
       </aside>
       <main className="main-area">
-        <div className="page-topline"><div><div className="breadcrumbs">АКСОН ЛОГИСТИКА <span>/</span> {pageTitles[view].toUpperCase()}</div><h1>{pageTitles[view]}</h1><p>{getSubtitle(view, profile)}</p></div><div className="page-actions">{(view === 'calendar' || view === 'requests') && <MonthControls month={month} setMonth={(nextMonth) => { setMonth(nextMonth); setSelectedDay(iso(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1))) }} />}{view === 'requests' && <button className="button button-secondary" onClick={() => { setSearch(''); setStatusFilter('all') }}><RefreshCw size={15} /> Сбросить фильтры</button>}{(view === 'calendar' && (profile.role === 'customer' || isAdmin) || view === 'requests' && isAdmin) && <button className="button button-primary" onClick={() => setRequestModal({ open: true })}><Plus size={16} /> Новая заявка</button>}</div></div>
+        <div className="page-topline"><div><div className="breadcrumbs">АКСОН ЛОГИСТИКА <span>/</span> {pageTitles[view].toUpperCase()}</div><h1>{pageTitles[view]}</h1><p>{getSubtitle(view, profile)}</p></div><div className="page-actions">{(view === 'calendar' || view === 'requests') && <MonthControls month={month} setMonth={(nextMonth) => { setMonth(nextMonth); setSelectedDay(iso(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1))) }} />}{view === 'requests' && <button className="button button-secondary" title="Очистить строку поиска и фильтр статуса" onClick={() => { setSearch(''); setStatusFilter('all') }}><RefreshCw size={15} /> Сбросить фильтры</button>}{(view === 'calendar' || view === 'requests') && canCreateRequest && <button className="button button-primary" title="Создать новую заявку на транспорт" onClick={() => setRequestModal({ open: true })}><Plus size={16} /> Новая заявка</button>}</div></div>
         {error && <div className="message message-error"><AlertCircle size={17} /><span>{error}</span><button onClick={() => setError('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {notice && <div className="message message-success"><CheckCircle2 size={17} /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {view === 'overview' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} />}
-        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} />}
+        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} />}
         {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} />}
         {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
         {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
         {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} />}
-        {view === 'history' && isAdmin && <HistoryView rows={auditRows} people={people} hasMore={historyHasMore} loadingMore={historyLoadingMore} onLoadMore={() => loadHistory(true)} search={historySearch} setSearch={setHistorySearch} entity={historyEntity} setEntity={setHistoryEntity} from={historyFrom} setFrom={setHistoryFrom} to={historyTo} setTo={setHistoryTo} onRefresh={loadHistory} />}
+        {view === 'reports' && canViewStaffPages && <ReportsView rows={reportRows} from={reportsFrom} setFrom={setReportsFrom} to={reportsTo} setTo={setReportsTo} loading={reportsLoading} onGenerate={loadReports} />}
+        {view === 'history' && canViewStaffPages && <HistoryView rows={auditRows} people={people} hasMore={historyHasMore} loadingMore={historyLoadingMore} onLoadMore={() => loadHistory(true)} search={historySearch} setSearch={setHistorySearch} entity={historyEntity} setEntity={setHistoryEntity} from={historyFrom} setFrom={setHistoryFrom} to={historyTo} setTo={setHistoryTo} onRefresh={loadHistory} />}
         <footer className="app-footer"><span>АКСОН ЛОГИСТИКА</span><span>Портал заказа транспорта · {new Date().getFullYear()}</span></footer>
       </main>
     </div>
@@ -446,12 +513,13 @@ function SetupScreen() {
 
 function LoginScreen({ login, password, setLogin, setPassword, signIn, busy, error }: { login: string; password: string; setLogin: (v: string) => void; setPassword: (v: string) => void; signIn: (e: FormEvent) => void; busy: boolean; error: string }) {
   const [showPassword, setShowPassword] = useState(false)
-  return <div className="login-screen"><div className="login-gradient"/><section className="login-panel"><div className="login-brand"><img src="/assets/logistic-logo.svg" alt="Аксон Логистика"/><span>ЛОГИСТИКА · ТРАНСПОРТ</span></div><div className="login-intro"><div className="login-icon"><Truck size={22}/></div><h1>Вход в портал</h1><p>Заказ транспорта между бизнес-единицами и распределительными центрами</p></div><form onSubmit={signIn} className="login-form"><label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="Например, IVANOV01" autoComplete="username" required /></label><label>Пароль<div className="password-wrap"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Введите пароль" autoComplete="current-password" required/><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}><Eye size={17}/></button></div></label>{error && <div className="login-error"><AlertCircle size={16}/>{error}</div>}<button className="button button-primary login-submit" disabled={busy}>{busy ? 'Выполняется вход…' : 'Войти в систему'}<ArrowRight size={17}/></button></form><div className="login-bottom"><ShieldCheck size={15}/> Защищённый доступ для сотрудников Аксон</div></section><div className="login-side"><div className="side-illustration"><div className="illustration-orbit orbit-one"/><div className="illustration-orbit orbit-two"/><div className="illustration-truck"><Truck size={104} strokeWidth={1.05}/></div><div className="route-node node-a"/><div className="route-node node-b"/><div className="route-line"/></div><div className="login-side-copy"><span>АКСОН ЛОГИСТИКА</span><h2>Транспортная логистика<br/>в едином пространстве</h2><p>Заявки, слоты, маршруты и координация перевозок — без лишних операций.</p></div></div></div>
+  return <div className="login-screen"><div className="login-gradient"/><section className="login-panel"><div className="login-brand"><img src="/assets/logistic-logo.svg" alt="Аксон Логистика"/><span>ЛОГИСТИКА · ТРАНСПОРТ</span></div><div className="login-intro"><div className="login-icon"><Truck size={22}/></div><h1>Вход в портал</h1><p>Заказ транспорта между бизнес-единицами и распределительными центрами</p></div><form onSubmit={signIn} className="login-form"><label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="Например, IVANOV01" autoComplete="username" title="Логин учётной записи для входа в портал." required /></label><label>Пароль<div className="password-wrap"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Введите пароль" autoComplete="current-password" title="Пароль вашей учётной записи." required/><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'} title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}><Eye size={17}/></button></div></label>{error && <div className="login-error"><AlertCircle size={16}/>{error}</div>}<button className="button button-primary login-submit" disabled={busy} title="Проверить логин и пароль и войти в портал">{busy ? 'Выполняется вход…' : 'Войти в систему'}<ArrowRight size={17}/></button></form><div className="login-bottom"><ShieldCheck size={15}/> Защищённый доступ для сотрудников Аксон</div></section><div className="login-side"><div className="side-illustration"><div className="illustration-orbit orbit-one"/><div className="illustration-orbit orbit-two"/><div className="illustration-truck"><Truck size={104} strokeWidth={1.05}/></div><div className="route-node node-a"/><div className="route-node node-b"/><div className="route-line"/></div><div className="login-side-copy"><span>АКСОН ЛОГИСТИКА</span><h2>Транспортная логистика<br/>в едином пространстве</h2><p>Заявки, слоты, маршруты и координация перевозок — без лишних операций.</p></div></div></div>
 }
 
 function getSubtitle(view: View, profile: Profile) {
   if (view === 'overview') return `Здравствуйте, ${profile.username}. Сводная информация по транспортным заявкам.`
   if (view === 'calendar') return 'Планирование трёх общих транспортных слотов на каждый день.'
+  if (view === 'reports') return 'Заявки, направления, типы груза и скорость закрытия за выбранный период.'
   if (view === 'requests') return 'Поиск, контроль статусов и работа с заявками за выбранный месяц.'
   if (view === 'users') return 'Создание учётных записей, редактирование ролей и управление доступом.'
   if (view === 'directory') return 'Добавление и редактирование бизнес-единиц и распределительных центров.'
@@ -480,23 +548,173 @@ function OverviewView({ profile, requests, occupancy, units, onNavigate, onReque
   </div>
 }
 
-function CalendarView({ month, days, requests, allRequests, occupancy, selectedDay, setSelectedDay, profile, units, onCreate, onOpen }: { month: Date; days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; occupancy: SlotOccupancy[]; selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[]; onCreate: (slot: number, date: string) => void; onOpen: (request: TransportRequest) => void }) {
-  const chosen = requests.filter((r) => r.transport_date === selectedDay)
-  const staff = profile.role !== 'customer'
-  return <div className="calendar-page"><section className="surface-card calendar-card"><div className="calendar-legend"><span><i className="legend-dot available"/> Свободно</span><span><i className="legend-dot booked"/> Занято</span><span><i className="legend-dot own"/> Моя заявка</span><span><i className="legend-dot created"/> Создано</span><span className="slots-note">3 общих слота на дату</span></div><div className="calendar-weekdays">{['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'].map((d) => <div key={d}>{d}</div>)}</div><div className="calendar-grid">{days.map((day) => { const key = iso(day); const inMonth = day.getMonth() === month.getMonth(); const dateRequests = allRequests.filter((r) => r.transport_date === key && r.status !== 'cancelled'); const busySlots = occupancy.filter((r) => r.transport_date === key); const occupiedCount = new Set([...busySlots.map((r) => r.slot_number), ...dateRequests.map((r) => r.slot_number)]).size; const isToday = key === iso(today); return <button key={key} className={`calendar-day ${!inMonth ? 'outside' : ''} ${selectedDay === key ? 'selected' : ''} ${isToday ? 'today' : ''}`} onClick={() => setSelectedDay(key)}><div className="calendar-day-head"><span>{day.getDate()}</span>{occupiedCount > 0 && <em>{occupiedCount}/3</em>}</div><div className="day-slots">{[1, 2, 3].map((slot) => { const found = dateRequests.find((r) => r.slot_number === slot); const busy = busySlots.some((r) => r.slot_number === slot) || !!found; const own = found?.requester_id === profile.id; if (!busy) return <span key={slot} className="day-slot free" title={`Слот ${slot} свободен`}>{slot}</span>; const created = found?.status === 'created'; return <span key={slot} className={`day-slot ${created ? 'request-created' : own ? 'own' : 'busy'}`} title={found ? `Слот ${slot}: заявка №${found.request_no} · ${statusNames[found.status]}` : `Слот ${slot} занят`}>{slot}</span> })}</div></button> })}</div><div className="calendar-foot"><span><span className="online-dot"/> Занято слотов: {occupancy.length}</span><span>Выберите дату, чтобы посмотреть заявки</span></div></section><section className="surface-card selected-day-card"><div className="card-heading"><div><h3>{dateLabel(selectedDay)}</h3><p>Заявки на выбранную дату</p></div><div className="day-count">{chosen.length}<small>заявок</small></div></div><div className="selected-slots">{[1, 2, 3].map((slot) => { const r = allRequests.find((x) => x.transport_date === selectedDay && x.slot_number === slot && x.status !== 'cancelled'); const isBusy = occupancy.some((x) => x.transport_date === selectedDay && x.slot_number === slot) || !!r; const own = r?.requester_id === profile.id; return <div key={slot} className={`selected-slot ${isBusy ? 'has-request' : 'empty-slot'}`}><div className="selected-slot-number">{slot}</div>{r ? <><div className="selected-slot-info"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>№{r.request_no} · {r.capacity_tons} т · {r.profiles?.username || 'Сотрудник'}</small></div><div className="selected-slot-actions"><StatusBadge status={r.status}/>{(staff || (own && r.status === 'created')) && <button className="icon-button small" onClick={() => onOpen(r)} title="Открыть заявку"><Pencil size={14}/></button>}</div></> : isBusy ? <><div className="selected-slot-info"><strong>Слот занят</strong><small>Время зарезервировано другой заявкой</small></div></> : <><div className="selected-slot-info"><strong>Слот свободен</strong><small>Нет активной заявки на эту дату</small></div>{(profile.role === 'customer' || profile.role === 'admin') && <button className="button button-outline button-compact" onClick={() => onCreate(slot, selectedDay)}><Plus size={14}/> Заявка</button>}</>}</div> })}</div><div className="selected-day-tip"><CircleHelp size={15}/>{profile.role === 'customer' ? 'Вы можете создать заявку в свободном слоте. После создания изменить её можно до обработки.' : profile.role === 'admin' ? 'Администратор может создавать заявки от имени любого активного заказчика и редактировать существующие.' : 'Вы можете открыть заявку, изменить её данные или обновить статус в разделе «Заявки».'}</div></section></div>
+function CalendarView({ month, days, requests, allRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, onCreate, onOpen, onCancel }: {
+  month: Date; days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; slots: CalendarSlot[]; occupancy: SlotOccupancy[];
+  selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[];
+  onCreate: (slot: number, date: string) => void; onOpen: (request: TransportRequest) => void; onCancel: (request: TransportRequest) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [cargoFilter, setCargoFilter] = useState('all')
+  const [capacityFilter, setCapacityFilter] = useState('all')
+  const canCreate = profile.role === 'customer' || profile.role === 'admin'
+  const canOperate = profile.role === 'dispatcher' || profile.role === 'admin'
+  const isCustomer = profile.role === 'customer'
+  const selectedDateRequests = requests.filter((r) => r.transport_date === selectedDay && r.status !== 'cancelled')
+  const normalizedQuery = query.trim().toLowerCase()
+
+  function matchesRequest(request?: TransportRequest) {
+    if (!request) return true
+    const fromUnit = units.find((unit) => unit.id === request.from_unit_id)
+    const toUnit = units.find((unit) => unit.id === request.to_unit_id)
+    const from = request.from_other_address || `${fromUnit?.code || ''} ${fromUnit?.name || ''}`
+    const to = request.to_other_address || `${toUnit?.code || ''} ${toUnit?.name || ''}`
+    const customer = request.profiles?.username || ''
+    const matchesText = !normalizedQuery || `${customer} ${from} ${to} ${request.request_no}`.toLowerCase().includes(normalizedQuery)
+    const matchesCargo = cargoFilter === 'all' || (request.request_cargo || []).some((item) => item.cargo_type === cargoFilter)
+    const matchesCapacity = capacityFilter === 'all' || String(request.capacity_tons) === capacityFilter
+    return matchesText && matchesCargo && matchesCapacity
+  }
+
+  const matchedCount = allRequests.filter((r) => r.status !== 'cancelled' && matchesRequest(r)).length
+  const activeSlotCount = new Set([...slots, ...occupancy].map((slot) => `${slot.transport_date}:${slot.slot_number}`)).size
+  const shortStatus: Record<RequestStatus, string> = { created: 'Создана', search: 'Поиск', confirmed: 'Подтв.', completed: 'Выполнена', cancelled: 'Отменена' }
+
+  return <div className="calendar-page">
+    <section className="surface-card calendar-card">
+      <div className="calendar-toolbar">
+        <div className="calendar-toolbar-copy"><strong>Транспортные слоты</strong><span>Нажмите на дату, чтобы открыть её слоты. Нажмите на занятый слот, чтобы открыть заявку.</span></div>
+        <div className="calendar-toolbar-month">{monthTitle(month)}</div>
+      </div>
+      {!isCustomer && <div className="calendar-filters">
+        <div className="search-field"><Search size={15}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Заказчик, откуда или куда" title="Поиск по заказчику, адресу отправления и адресу назначения"/></div>
+        <select value={cargoFilter} onChange={(e) => setCargoFilter(e.target.value)} title="Отфильтровать заявки по типу груза">
+          <option value="all">Все типы груза</option><option value="goods">Товар</option><option value="equipment">Оборудование</option><option value="packaging">Тара</option>
+        </select>
+        <select value={capacityFilter} onChange={(e) => setCapacityFilter(e.target.value)} title="Отфильтровать заявки по грузоподъёмности">
+          <option value="all">Любой тоннаж</option><option value="1.5">1,5 т</option><option value="5">5 т</option><option value="10">10 т</option><option value="20">20 т</option>
+        </select>
+        {(query || cargoFilter !== 'all' || capacityFilter !== 'all') && <button className="icon-button small" title="Сбросить фильтры календаря" onClick={() => { setQuery(''); setCargoFilter('all'); setCapacityFilter('all') }}><X size={14}/></button>}
+        <span className="calendar-filter-count">Совпадений: <b>{matchedCount}</b></span>
+      </div>}
+      <div className="calendar-legend">
+        <span><i className="legend-dot available"/> Свободный слот</span>
+        <span><i className="legend-dot created"/> Создана</span>
+        <span><i className="legend-dot booked"/> В обработке / закрыта</span>
+        <span className="slots-note">3 слота на каждый день</span>
+      </div>
+      <div className="calendar-weekdays">{['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'].map((d) => <div key={d}>{d}</div>)}</div>
+      <div className="calendar-grid">
+        {days.map((day) => {
+          const key = iso(day)
+          const inMonth = day.getMonth() === month.getMonth()
+          const dateRequests = allRequests.filter((r) => r.transport_date === key && r.status !== 'cancelled')
+          const dateSlots = slots.filter((r) => r.transport_date === key)
+          const occupied = new Set([...dateSlots.map((r) => r.slot_number), ...dateRequests.map((r) => r.slot_number), ...occupancy.filter((r) => r.transport_date === key).map((r) => r.slot_number)])
+          const isToday = key === iso(today)
+          if (!inMonth) return <article key={key} className="calendar-day outside" aria-hidden="true">
+            <div className="calendar-date-button calendar-date-muted"><span className="calendar-date-number">{day.getDate()}</span><span className="calendar-date-month">{day.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '')}</span></div>
+            <div className="day-slots day-slots-muted"><span/><span/><span/></div>
+          </article>
+          return <article key={key} className={`calendar-day ${selectedDay === key ? 'selected' : ''} ${isToday ? 'today' : ''}`}>
+            <button type="button" className="calendar-date-button" onClick={() => setSelectedDay(key)} title={`Показать слоты на ${dateLabel(key)}`}>
+              <span className="calendar-date-number">{day.getDate()}</span>
+              <span className="calendar-date-month">{day.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '')}</span>
+              {occupied.size > 0 && <em>{occupied.size}/3</em>}
+            </button>
+            <div className="day-slots">
+              {[1, 2, 3].map((slotNo) => {
+                const request = dateRequests.find((r) => r.slot_number === slotNo)
+                const summary = dateSlots.find((r) => r.slot_number === slotNo)
+                const busyFallback = occupancy.some((r) => r.transport_date === key && r.slot_number === slotNo)
+                const busy = !!request || !!summary || busyFallback
+                const matches = !request || matchesRequest(request)
+                if (!busy) return <button key={slotNo} type="button" className="day-slot free" title={canCreate ? `Создать заявку · слот ${slotNo}` : `Свободный слот ${slotNo}`} onClick={() => { setSelectedDay(key); if (canCreate) onCreate(slotNo, key) }}>+</button>
+                const status = request?.status || summary?.status
+                const beCode = summary?.from_be_code || (request ? resolveUnit(units, request.from_unit_id, request.from_other_address) : 'Занято')
+                return <button key={slotNo} type="button" className={`day-slot occupied ${status ? statusClasses[status] : 'status-search'} ${matches ? '' : 'filtered-out'}`} title={request ? `Слот ${slotNo} · ${beCode} · ${statusNames[request.status]} · заявка №${request.request_no}` : `Слот ${slotNo} · ${beCode} · ${status ? statusNames[status] : 'Занято'}`} onClick={() => { setSelectedDay(key); if (request) onOpen(request) }}>
+                  <b>{beCode}</b><small>{status ? shortStatus[status] : 'Занято'}</small>
+                </button>
+              })}
+            </div>
+          </article>
+        })}
+      </div>
+      <div className="calendar-foot"><span><span className="online-dot"/> Занято слотов: {activeSlotCount}</span><span>Цвет слота показывает его статус, код — БЕ отправления</span></div>
+    </section>
+
+    <section className="surface-card selected-day-card">
+      <div className="card-heading"><div><h3>{dateLabel(selectedDay, { day: 'numeric', month: 'long', year: 'numeric' })}</h3><p>Три транспортных слота на выбранную дату</p></div><div className="day-count">{selectedDateRequests.length}<small>заявок</small></div></div>
+      <div className="selected-slots">
+        {[1, 2, 3].map((slotNo) => {
+          const request = allRequests.find((r) => r.transport_date === selectedDay && r.slot_number === slotNo && r.status !== 'cancelled')
+          const summary = slots.find((r) => r.transport_date === selectedDay && r.slot_number === slotNo)
+          const isBusy = !!request || !!summary || occupancy.some((x) => x.transport_date === selectedDay && x.slot_number === slotNo)
+          const isOwn = request?.requester_id === profile.id
+          const canOpen = !!request && (canOperate || profile.role === 'utz' || (isCustomer && isOwn))
+          const canEditRequest = !!request && (canOperate || (isCustomer && isOwn && request.status === 'created'))
+          return <div key={slotNo} className={`selected-slot ${isBusy ? 'has-request' : 'empty-slot'}`}>
+            <div className="selected-slot-number">{slotNo}</div>
+            {request ? <>
+              <div className="selected-slot-info">
+                <strong><span>{resolveUnit(units, request.from_unit_id, request.from_other_address)}</span><ArrowRight size={13}/><span>{resolveUnit(units, request.to_unit_id, request.to_other_address)}</span></strong>
+                <small>БЕ отправления: {resolveUnit(units, request.from_unit_id, request.from_other_address)} · №{request.request_no} · {request.capacity_tons} т{!isCustomer ? ` · ${request.profiles?.username || 'Заказчик'}` : ''}</small>
+              </div>
+              <div className="selected-slot-actions"><StatusBadge status={request.status}/>
+                {canOpen && <button className="icon-button small" onClick={() => onOpen(request)} title={canEditRequest ? 'Редактировать заявку' : 'Просмотреть заявку'}>{canEditRequest ? <Pencil size={14}/> : <Eye size={14}/>}</button>}
+                {isCustomer && isOwn && request.status === 'created' && <button className="icon-button small danger-icon" onClick={() => onCancel(request)} title="Отменить собственную заявку"><Ban size={14}/></button>}
+              </div>
+            </> : summary ? <>
+              <div className="selected-slot-info"><strong>БЕ отправления: {summary.from_be_code}</strong><small>Статус заявки: {statusNames[summary.status]} · детали доступны по вашей роли</small></div>
+              <StatusBadge status={summary.status}/>
+            </> : isBusy ? <>
+              <div className="selected-slot-info"><strong>Слот занят</strong><small>Сводные данные временно недоступны</small></div>
+            </> : <>
+              <div className="selected-slot-info"><strong>Свободный слот</strong><small>На эту дату нет активной заявки</small></div>
+              {canCreate && <button className="button button-outline button-compact" onClick={() => onCreate(slotNo, selectedDay)} title="Создать заявку в этом слоте"><Plus size={14}/> Заявка</button>}
+            </>}
+          </div>
+        })}
+      </div>
+      <div className="selected-day-tip"><CircleHelp size={15}/>{profile.role === 'customer' ? 'Вы видите статусы и БЕ отправления всех занятых слотов, а подробности — только собственных заявок. Создать можно в свободном слоте; отменить — пока статус «Создана».' : profile.role === 'admin' ? 'Администратор может создавать заявки от имени любого заказчика и редактировать все заявки.' : profile.role === 'dispatcher' ? 'Диспетчер может открывать и редактировать заявки, менять их статусы и просматривать историю.' : 'УТЗ доступен просмотр всех заявок и календаря, без изменения данных и статусов.'}</div>
+    </section>
+  </div>
 }
 
-function RequestsView({ requests, units, profile, search, setSearch, statusFilter, setStatusFilter, onStatus, onEdit, onCancel }: { requests: TransportRequest[]; units: BusinessUnit[]; profile: Profile; search: string; setSearch: (v: string) => void; statusFilter: 'all' | RequestStatus; setStatusFilter: (v: 'all' | RequestStatus) => void; onStatus: (r: TransportRequest, s: RequestStatus) => void; onEdit: (r: TransportRequest) => void; onCancel: (r: TransportRequest) => void }) {
-  const staff = profile.role !== 'customer'
+function RequestsView({ requests, units, profile, search, setSearch, statusFilter, setStatusFilter, onStatus, onEdit, onCancel }: {
+  requests: TransportRequest[]; units: BusinessUnit[]; profile: Profile; search: string; setSearch: (v: string) => void;
+  statusFilter: 'all' | RequestStatus; setStatusFilter: (v: 'all' | RequestStatus) => void;
+  onStatus: (r: TransportRequest, s: RequestStatus) => void; onEdit: (r: TransportRequest) => void; onCancel: (r: TransportRequest) => void
+}) {
+  const canChangeStatuses = profile.role === 'dispatcher' || profile.role === 'admin'
+  const isCustomer = profile.role === 'customer'
   function exportCsv() {
-    const headers = ['Номер заявки', 'Дата', 'Слот', 'БЕ', 'Откуда', 'Куда', 'Заказчик', 'Грузоподъёмность, т', 'Погрузка', 'Груз', 'Статус']
-    const rows = requests.map((r) => [r.request_no, r.transport_date, r.slot_number, r.business_units?.code || '', resolveUnit(units, r.from_unit_id, r.from_other_address), resolveUnit(units, r.to_unit_id, r.to_other_address), r.profiles?.username || '', r.capacity_tons, r.loading_type === 'rear' ? 'Задняя' : 'Боковая', (r.request_cargo || []).map((c) => cargoNames[c.cargo_type] || c.cargo_type).join('; '), statusNames[r.status]])
+    const headers = ['Номер заявки', 'Дата', 'Слот', 'БЕ', 'Откуда', 'Куда', 'Заказчик', 'Грузоподъёмность, т', 'Погрузка', 'Груз', 'Грузомест оборудования, паллетомест', 'Статус']
+    const rows = requests.map((r) => [r.request_no, r.transport_date, r.slot_number, r.business_units?.code || '', resolveUnit(units, r.from_unit_id, r.from_other_address), resolveUnit(units, r.to_unit_id, r.to_other_address), r.profiles?.username || '', r.capacity_tons, r.loading_type === 'rear' ? 'Задняя' : 'Боковая', (r.request_cargo || []).map((c) => cargoNames[c.cargo_type] || c.cargo_type).join('; '), r.request_cargo?.find((c) => c.cargo_type === 'equipment')?.equipment_pallet_places || '', statusNames[r.status]])
     const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
     const csv = '\uFEFF' + [headers, ...rows].map((row) => row.map(escape).join(';')).join('\r\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
     const link = document.createElement('a'); link.href = url; link.download = `akson-transport-requests-${iso(today)}.csv`; link.click(); URL.revokeObjectURL(url)
   }
-  return <div className="requests-page"><section className="surface-card filters-card"><div className="search-field"><Search size={17}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по номеру, маршруту или логину"/></div><div className="filter-select"><Filter size={16}/><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | RequestStatus)}><option value="all">Все статусы</option>{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div><span className="results-count">Найдено: <strong>{requests.length}</strong></span><button className="button button-secondary button-compact" onClick={exportCsv} disabled={!requests.length}><FileSpreadsheet size={14}/> Выгрузить CSV</button></section>{requests.length ? <section className="surface-card table-card"><div className="table-scroll"><table className="requests-table"><thead><tr><th>Заявка</th><th>Дата / слот</th><th>Маршрут</th><th>Заказчик</th><th>Параметры</th><th>Статус</th><th>Действия</th></tr></thead><tbody>{requests.map((r) => <tr key={r.id}><td><strong className="request-number">№{r.request_no}</strong><small>Транспорт</small></td><td><strong>{dateLabel(r.transport_date, { day: 'numeric', month: 'short' })}</strong><small>Слот {r.slot_number}</small></td><td><div className="table-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)}</strong><ArrowRight size={13}/><strong>{resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong></div><small>{r.business_units?.code || 'БЕ'}</small></td><td><strong>{r.profiles?.username || profile.username}</strong><small>{roleNames.customer}</small></td><td><strong>{r.capacity_tons} т</strong><small>{r.loading_type === 'rear' ? 'Задняя' : 'Боковая'} погрузка</small></td><td>{staff ? <select className={`status-select ${statusClasses[r.status]}`} value={r.status} onChange={(e) => onStatus(r, e.target.value as RequestStatus)}>{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select> : <StatusBadge status={r.status}/>}</td><td><div className="row-actions"><button className="icon-button small" onClick={() => onEdit(r)} title="Подробнее / изменить" disabled={!staff && r.status !== 'created'}><Pencil size={14}/></button>{staff && r.status !== 'cancelled' && <button className="icon-button small danger-icon" onClick={() => onCancel(r)} title="Отменить заявку"><Ban size={14}/></button>}</div></td></tr>)}</tbody></table></div></section> : <section className="surface-card empty-large"><EmptyState icon={Search} title="Заявки не найдены" text="Измените параметры поиска или выберите другой статус."/></section>}</div>
+  return <div className="requests-page">
+    <section className="surface-card filters-card">
+      <div className="search-field"><Search size={17}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по номеру, маршруту или логину" title="Номер заявки, маршрут или логин заказчика"/></div>
+      <div className="filter-select"><Filter size={16}/><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | RequestStatus)} title="Отобрать заявки по статусу"><option value="all">Все статусы</option>{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
+      <span className="results-count">Найдено: <strong>{requests.length}</strong></span>
+      <button className="button button-secondary button-compact" onClick={exportCsv} disabled={!requests.length} title="Выгрузить отображаемые заявки в CSV"><FileSpreadsheet size={14}/> Выгрузить CSV</button>
+    </section>
+    {requests.length ? <section className="surface-card table-card"><div className="table-scroll"><table className="requests-table"><thead><tr><th>Заявка</th><th>Дата / слот</th><th>Маршрут</th><th>Заказчик</th><th>Параметры</th><th>Статус</th><th>Действия</th></tr></thead><tbody>{requests.map((r) => <tr key={r.id}>
+      <td><strong className="request-number">№{r.request_no}</strong><small>Транспорт</small></td>
+      <td><strong>{dateLabel(r.transport_date, { day: 'numeric', month: 'short' })}</strong><small>Слот {r.slot_number}</small></td>
+      <td><div className="table-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)}</strong><ArrowRight size={13}/><strong>{resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong></div><small>{r.business_units?.code || 'БЕ'}</small></td>
+      <td><strong>{r.profiles?.username || profile.username}</strong><small>{roleNames.customer}</small></td>
+      <td><strong>{r.capacity_tons} т</strong><small>{(r.request_cargo || []).map((c) => c.cargo_type === 'equipment' && c.equipment_pallet_places > 0 ? `${cargoNames[c.cargo_type]}: ${c.equipment_pallet_places} паллетомест` : cargoNames[c.cargo_type]).join(', ') || (r.loading_type === 'rear' ? 'Задняя' : 'Боковая')}</small></td>
+      <td>{canChangeStatuses ? <select className={`status-select ${statusClasses[r.status]}`} value={r.status} onChange={(e) => onStatus(r, e.target.value as RequestStatus)} title="Изменить статус заявки">{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select> : <StatusBadge status={r.status}/>}</td>
+      <td><div className="row-actions">
+        <button className="icon-button small" onClick={() => onEdit(r)} title={canChangeStatuses ? 'Открыть и редактировать заявку' : isCustomer && r.status === 'created' ? 'Редактировать свою заявку' : 'Просмотреть заявку'}>{canChangeStatuses || (isCustomer && r.status === 'created') ? <Pencil size={14}/> : <Eye size={14}/>}</button>
+        {(canChangeStatuses && r.status !== 'cancelled' || isCustomer && r.status === 'created') && <button className="icon-button small danger-icon" onClick={() => onCancel(r)} title="Отменить заявку"><Ban size={14}/></button>}
+      </div></td>
+    </tr>)}</tbody></table></div></section> : <section className="surface-card empty-large"><EmptyState icon={Search} title="Заявки не найдены" text="Измените параметры поиска или выберите другой статус."/></section>}
+  </div>
 }
 
 function UsersView({ people, units, currentUserId, formOpen, setFormOpen, draft, setDraft, onSubmit, onToggle, onEdit, saving }: {
@@ -596,6 +814,65 @@ function SettingsView({ bookingAdvanceDays, setBookingAdvanceDays, roleLimits, s
   </div>
 }
 
+function exportReportCsv(rows: ReportRow[], filename: string) {
+  const headers = ['Показатель', 'Количество заявок', 'Среднее закрытие, дней', 'Закрыто', 'Не закрыто']
+  const csvRows = rows.map((row) => [row.label, row.request_count, row.average_close_days ?? '', row.closed_count, row.open_count])
+  const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
+  const csv = '\uFEFF' + [headers, ...csvRows].map((row) => row.map(escape).join(';')).join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
+  const link = document.createElement('a'); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url)
+}
+
+function ReportsView({ rows, from, setFrom, to, setTo, loading, onGenerate }: {
+  rows: ReportRow[]; from: string; setFrom: (value: string) => void; to: string; setTo: (value: string) => void;
+  loading: boolean; onGenerate: () => void
+}) {
+  const bySection = (section: ReportRow['section']) => rows.filter((row) => row.section === section)
+  const summary = bySection('summary')[0]
+  const customers = bySection('customer')
+  const origins = bySection('from')
+  const destinations = bySection('to')
+  const cargo = bySection('cargo')
+  const closure = bySection('closing_speed')
+  const statuses = bySection('status')
+  const openStatuses = statuses.filter((row) => row.open_count > 0)
+  const maxOf = (items: ReportRow[]) => Math.max(1, ...items.map((row) => Number(row.request_count) || 0))
+  const renderBars = (items: ReportRow[], valueLabel: string) => <div className="report-bars">{items.length ? items.map((row) => <div className="report-bar-row" key={row.label} title={`${row.label}: ${row.request_count} заявок`}><div className="report-bar-meta"><span>{row.label}</span><b>{row.request_count}</b></div><div className="report-bar-track"><i style={{ width: `${Math.max(2, row.request_count / maxOf(items) * 100)}%` }}/></div>{valueLabel === 'days' && row.average_close_days !== null && <small>Среднее: {Number(row.average_close_days).toFixed(1)} дн.</small>}</div>) : <div className="report-empty">Нет данных за выбранный период.</div>}</div>
+  const renderTable = (title: string, section: ReportRow['section'], rowsForTable: ReportRow[]) => <section className="surface-card report-table-card" key={section}>
+    <div className="report-section-heading"><div><h3>{title}</h3><p>{rowsForTable.length} строк отчёта</p></div><button className="button button-secondary button-compact" disabled={!rowsForTable.length} onClick={() => exportReportCsv(rowsForTable, `akson-report-${section}-${from}-${to}.csv`)} title={`Выгрузить таблицу «${title}» в CSV`}><FileSpreadsheet size={14}/> CSV</button></div>
+    {rowsForTable.length ? <div className="table-scroll"><table className="report-table"><thead><tr><th>Показатель</th><th>Заявок</th><th>Закрыто</th><th>Не закрыто</th><th>Среднее закрытие</th></tr></thead><tbody>{rowsForTable.map((row) => <tr key={row.label}><td>{row.label}</td><td><strong>{row.request_count}</strong></td><td>{row.closed_count}</td><td>{row.open_count}</td><td>{row.average_close_days === null ? '—' : `${Number(row.average_close_days).toFixed(1)} дн.`}</td></tr>)}</tbody></table></div> : <div className="report-empty">Нет данных за выбранный период.</div>}
+  </section>
+
+  return <div className="reports-page">
+    <section className="surface-card reports-filter-card">
+      <div className="reports-filter-copy"><strong>Отчётный период</strong><small>Период определяется по дате перевозки, а скорость закрытия — от создания заявки до статуса «Выполнена».</small></div>
+      <label>С даты<input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} title="Начало отчётного периода"/></label>
+      <label>По дату<input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} title="Конец отчётного периода"/></label>
+      <button className="button button-primary" onClick={onGenerate} disabled={loading || !from || !to || from > to} title="Сформировать отчёты за выбранный период">{loading ? 'Формируем…' : 'Сформировать отчёт'} <Activity size={15}/></button>
+    </section>
+    {!rows.length ? <section className="surface-card empty-large"><EmptyState icon={Activity} title="Нет сформированного отчёта" text="Выберите период и нажмите «Сформировать отчёт»."/></section> : <>
+      <div className="report-kpis-heading"><strong>Сводные показатели</strong><button className="button button-secondary button-compact" disabled={!summary} onClick={() => exportReportCsv(summary ? [summary] : [], `akson-report-summary-${from}-${to}.csv`)} title="Выгрузить сводные показатели отчёта в CSV"><FileSpreadsheet size={14}/> Сводка CSV</button></div>
+      <div className="report-kpis">
+        <article className="surface-card report-kpi"><span>Всего заявок</span><strong>{summary?.request_count ?? 0}</strong><small>За выбранный период</small></article>
+        <article className="surface-card report-kpi"><span>Закрыто</span><strong>{summary?.closed_count ?? 0}</strong><small>Статус «Выполнена»</small></article>
+        <article className="surface-card report-kpi"><span>Не закрыто</span><strong>{summary?.open_count ?? 0}</strong><small>Создана, поиск или подтверждена</small></article>
+        <article className="surface-card report-kpi"><span>Средний срок закрытия</span><strong>{summary?.average_close_days === null || summary?.average_close_days === undefined ? '—' : `${Number(summary.average_close_days).toFixed(1)}`}</strong><small>Дней от создания до выполнения</small></article>
+      </div>
+      <div className="reports-grid">
+        {renderTable('Заявки по заказчикам', 'customer', customers)}
+        {renderTable('Заявки по отправлению — откуда', 'from', origins)}
+        {renderTable('Заявки по назначению — куда', 'to', destinations)}
+      </div>
+      <div className="reports-grid reports-charts-grid">
+        <section className="surface-card report-chart-card"><div className="report-section-heading"><div><h3>Заявки по типу груза</h3><p>Количество заявок каждого типа</p></div><button className="button button-secondary button-compact" disabled={!cargo.length} onClick={() => exportReportCsv(cargo, `akson-report-cargo-${from}-${to}.csv`)} title="Выгрузить данные по типу груза"><FileSpreadsheet size={14}/> CSV</button></div>{renderBars(cargo, 'count')}</section>
+        <section className="surface-card report-chart-card"><div className="report-section-heading"><div><h3>Скорость закрытия</h3><p>Распределение выполненных заявок по дням</p></div><button className="button button-secondary button-compact" disabled={!closure.length} onClick={() => exportReportCsv(closure, `akson-report-closing-speed-${from}-${to}.csv`)} title="Выгрузить скорость закрытия в CSV"><FileSpreadsheet size={14}/> CSV</button></div>{renderBars(closure, 'days')}</section>
+        <section className="surface-card report-chart-card"><div className="report-section-heading"><div><h3>Незакрытые заявки</h3><p>Количество заявок в каждом активном статусе</p></div><button className="button button-secondary button-compact" disabled={!openStatuses.length} onClick={() => exportReportCsv(openStatuses, `akson-report-open-${from}-${to}.csv`)} title="Выгрузить количество незакрытых заявок по статусам"><FileSpreadsheet size={14}/> CSV</button></div>{renderBars(openStatuses, 'count')}</section>
+      </div>
+      <div className="report-footer-note">Все таблицы и графики рассчитаны по дате перевозки. Скорость закрытия учитывает только заявки, которые получили статус «Выполнена» в истории статусов.</div>
+    </>}
+  </div>
+}
+
 function HistoryView({ rows, people, hasMore, loadingMore, onLoadMore, search, setSearch, entity, setEntity, from, setFrom, to, setTo, onRefresh }: {
   rows: AuditRecord[]; people: Profile[]; hasMore: boolean; loadingMore: boolean; onLoadMore: () => void; search: string; setSearch: (v: string) => void; entity: string; setEntity: (v: string) => void;
   from: string; setFrom: (v: string) => void; to: string; setTo: (v: string) => void; onRefresh: () => void
@@ -612,7 +889,7 @@ function HistoryView({ rows, people, hasMore, loadingMore, onLoadMore, search, s
     role_request_limit: 'Лимит роли', portal_settings: 'Общие настройки'
   }
   const filtered = useMemo(() => rows.filter((row) => {
-    const actor = people.find((person) => person.id === row.actor_id)?.username || ''
+    const actor = row.actor_username || people.find((person) => person.id === row.actor_id)?.username || ''
     const haystack = `${actor} ${row.action} ${row.entity_type} ${row.entity_id || ''} ${JSON.stringify(row.details || {})}`.toLowerCase()
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(row.created_at))
     return (entity === 'all' || row.entity_type === entity)
@@ -620,7 +897,7 @@ function HistoryView({ rows, people, hasMore, loadingMore, onLoadMore, search, s
       && (!search.trim() || haystack.includes(search.trim().toLowerCase()))
   }), [rows, people, search, entity, from, to])
   return <div className="history-page">
-    <section className="surface-card history-filters"><div className="search-field"><Search size={16}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по пользователю, действию или деталям"/></div><select className="history-entity" value={entity} onChange={(e) => setEntity(e.target.value)}><option value="all">Все объекты</option><option value="transport_request">Заявки</option><option value="request_cargo">Груз заявок</option><option value="profile">Пользователи</option><option value="business_unit">Справочник</option><option value="role_request_limit">Лимиты ролей</option><option value="portal_settings">Общие настройки</option></select><label className="history-date">С даты<input type="date" value={from} onChange={(e) => setFrom(e.target.value)}/></label><label className="history-date">По дату<input type="date" value={to} onChange={(e) => setTo(e.target.value)}/></label><button className="button button-secondary button-compact" onClick={() => onRefresh()}><RefreshCw size={14}/> Обновить</button></section>
+    <section className="surface-card history-filters"><div className="search-field"><Search size={16}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по пользователю, действию или деталям" title="Поиск по автору, типу действия, объекту и описанию изменений"/></div><select className="history-entity" value={entity} onChange={(e) => setEntity(e.target.value)} title="Оставить в истории только выбранный тип объектов"><option value="all">Все объекты</option><option value="transport_request">Заявки</option><option value="request_cargo">Груз заявок</option><option value="profile">Пользователи</option><option value="business_unit">Справочник</option><option value="role_request_limit">Лимиты ролей</option><option value="portal_settings">Общие настройки</option></select><label className="history-date" title="Начало периода журнала действий">С даты<input type="date" value={from} onChange={(e) => setFrom(e.target.value)}/></label><label className="history-date" title="Окончание периода журнала действий">По дату<input type="date" value={to} onChange={(e) => setTo(e.target.value)}/></label><button className="button button-secondary button-compact" onClick={() => onRefresh()}><RefreshCw size={14}/> Обновить</button></section>
     <div className="history-results-head"><strong>Показано событий: {filtered.length}</strong><span>Загружено: {rows.length}</span></div>
     {filtered.length ? <div className="history-list">{filtered.map((row) => {
       const actor = row.actor_username || people.find((person) => person.id === row.actor_id)?.username || 'Системный процесс'
@@ -658,11 +935,12 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const [stock, setStock] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'goods')?.stock_pallets || 0))
   const [kdk, setKdk] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'goods')?.kdk_pallets || 0))
   const [packaging, setPackaging] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'packaging')?.packaging_qty || 0))
+  const [equipmentPalletPlaces, setEquipmentPalletPlaces] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'equipment')?.equipment_pallet_places || 0))
   const [formError, setFormError] = useState('')
   const be = units.filter((u) => u.kind === 'BE' && (u.is_active || u.id === request?.from_unit_id))
   const destinations = units.filter((u) => u.is_active || u.id === request?.to_unit_id)
   const occupied = occupancy.some((r) => r.transport_date === date && r.slot_number === slotNo && !(request?.transport_date === date && request.slot_number === slotNo))
-  const canEdit = profile.role === 'admin' || profile.role !== 'customer' || (!!request && request.requester_id === profile.id && request.status === 'created')
+  const canEdit = request ? (profile.role === 'admin' || profile.role === 'dispatcher' || (profile.role === 'customer' && request.requester_id === profile.id && request.status === 'created')) : (profile.role === 'admin' || profile.role === 'customer')
   function toggleCargo(value: string) { setCargo((old) => old.includes(value) ? old.filter((x) => x !== value) : [...old, value]) }
   async function submit(event: FormEvent) {
     event.preventDefault(); setFormError('')
@@ -675,7 +953,8 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
       if (occupied) throw new Error('Этот слот уже занят. Выберите другой слот или дату.')
       if (cargo.includes('goods') && Number(stock) + Number(kdk) <= 0) throw new Error('Укажите количество паллет Сток и/или КДК.')
       if (cargo.includes('packaging') && Number(packaging) <= 0) throw new Error('Укажите количество тары.')
-      await onSave({ requester_id: profile.role === 'admin' ? requesterId : undefined, transport_date: date, slot_number: slotNo, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0) }, request)
+      if (cargo.includes('equipment') && (!Number.isInteger(Number(equipmentPalletPlaces)) || Number(equipmentPalletPlaces) <= 0)) throw new Error('Укажите количество грузомест оборудования в паллетоместах.')
+      await onSave({ requester_id: profile.role === 'admin' ? requesterId : undefined, transport_date: date, slot_number: slotNo, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0), equipment_pallet_places: Number(equipmentPalletPlaces || 0) }, request)
     } catch (e) { setFormError(errorText(e)) }
   }
   return (
@@ -711,12 +990,12 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
           <div className="form-grid-two request-field-grid">
             <label className="request-field">
               <span>Дата перевозки</span>
-              <input type="date" value={date} min={!request ? minimumDate : undefined} onChange={(e) => setDate(e.target.value)} required disabled={!canEdit}/>
+              <input type="date" value={date} min={!request ? minimumDate : undefined} onChange={(e) => setDate(e.target.value)} required disabled={!canEdit} title="Дата, на которую требуется транспорт. Дата ограничена настройкой предварительной записи."/>
               <small className="field-hint">Минимальный срок подачи: {bookingAdvanceDays} дн.</small>
             </label>
             <label className="request-field">
               <span>Транспортный слот</span>
-              <select value={slotNo} onChange={(e) => setSlotNo(Number(e.target.value))} disabled={!canEdit}>
+              <select value={slotNo} onChange={(e) => setSlotNo(Number(e.target.value))} disabled={!canEdit} title="Один из трёх общих слотов на выбранную дату.">
                 {[1, 2, 3].map((n) => <option value={n} key={n}>Слот {n}</option>)}
               </select>
             </label>
@@ -726,7 +1005,7 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
           <div className="form-grid-two request-field-grid">
             <div className="request-field-group">
               <label htmlFor="request-from">Откуда</label>
-              <select id="request-from" value={from} onChange={(e) => setFrom(e.target.value)} required disabled={!canEdit}>
+              <select id="request-from" value={from} onChange={(e) => setFrom(e.target.value)} required disabled={!canEdit} title="Бизнес-единица или адрес, откуда нужно забрать груз.">
                 <option value="">Выберите БЕ</option>
                 {be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}
                 <option value="other">Другой адрес</option>
@@ -735,7 +1014,7 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
             </div>
             <div className="request-field-group">
               <label htmlFor="request-to">Куда</label>
-              <select id="request-to" value={to} onChange={(e) => setTo(e.target.value)} required disabled={!canEdit}>
+              <select id="request-to" value={to} onChange={(e) => setTo(e.target.value)} required disabled={!canEdit} title="Бизнес-единица, РЦ или адрес назначения.">
                 <option value="">Выберите БЕ или РЦ</option>
                 {destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}
                 <option value="other">Другой адрес</option>
@@ -761,16 +1040,17 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
           </div>
 
           <div className="form-section-label">Состав груза</div>
-          <div className="cargo-tiles request-cargo-tiles">
+          <div className="cargo-tiles request-cargo-tiles" title="Отметьте все типы груза, которые входят в заявку.">
             {([['goods', 'Товар', Package], ['equipment', 'Оборудование', Warehouse], ['packaging', 'Тара', Layers3]] as const).map(([value, label, Icon]) => <button type="button" key={value} className={cargo.includes(value) ? 'cargo-tile active' : 'cargo-tile'} onClick={() => toggleCargo(value)} disabled={!canEdit}><Icon size={23}/><strong>{label}</strong><span>{cargo.includes(value) ? 'Выбрано' : 'Добавить'}</span></button>)}
           </div>
 
-          {(cargo.includes('goods') || cargo.includes('packaging')) && <div className="form-grid-two request-field-grid cargo-quantities request-quantity-grid">
+          {(cargo.includes('goods') || cargo.includes('packaging') || cargo.includes('equipment')) && <div className={`form-grid-two request-field-grid cargo-quantities request-quantity-grid ${cargo.includes('equipment') && !cargo.includes('goods') && !cargo.includes('packaging') ? 'equipment-only' : ''}`}>
             {cargo.includes('goods') && <>
-              <label className="request-field"><span>Сток, паллетомест</span><input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} disabled={!canEdit}/></label>
-              <label className="request-field"><span>КДК, паллетомест</span><input type="number" min="0" value={kdk} onChange={(e) => setKdk(e.target.value)} disabled={!canEdit}/></label>
+              <label className="request-field" title="Количество паллетомест товарного запаса Сток."><span>Сток, паллетомест</span><input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} disabled={!canEdit}/></label>
+              <label className="request-field" title="Количество паллетомест категории КДК."><span>КДК, паллетомест</span><input type="number" min="0" value={kdk} onChange={(e) => setKdk(e.target.value)} disabled={!canEdit}/></label>
             </>}
-            {cargo.includes('packaging') && <label className="request-field"><span>Количество тары</span><input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!canEdit}/></label>}
+            {cargo.includes('packaging') && <label className="request-field" title="Количество единиц или мест тары в заявке."><span>Количество тары</span><input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!canEdit}/></label>}
+            {cargo.includes('equipment') && <label className="request-field" title="Укажите количество грузомест оборудования. Единица измерения — паллетомест."><span>Количество грузомест</span><input type="number" min="1" step="1" value={equipmentPalletPlaces} onChange={(e) => setEquipmentPalletPlaces(e.target.value)} placeholder="Например, 4" required disabled={!canEdit}/><small className="field-hint">Ед. измерения: паллетомест</small></label>}
           </div>}
 
           {occupied && <div className="message message-error"><AlertCircle size={16}/> Этот слот уже занят другой заявкой.</div>}
@@ -787,7 +1067,7 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
 }
 
 function MonthControls({ month, setMonth }: { month: Date; setMonth: (v: Date) => void }) {
-  return <div className="month-controls"><button className="icon-button" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={17}/></button><strong>{monthTitle(month)}</strong><button className="icon-button" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={17}/></button></div>
+  return <div className="month-controls"><button className="icon-button" title="Предыдущий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={17}/></button><strong>{monthTitle(month)}</strong><button className="icon-button" title="Следующий месяц" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={17}/></button></div>
 }
 function StatusBadge({ status }: { status: RequestStatus }) { return <span className={`status-badge ${statusClasses[status]}`}><i/>{statusNames[status]}</span> }
 function EmptyState({ icon: Icon, title, text }: { icon: typeof Search; title: string; text: string }) { return <div className="empty-state"><div><Icon size={25}/></div><strong>{title}</strong><p>{text}</p></div> }

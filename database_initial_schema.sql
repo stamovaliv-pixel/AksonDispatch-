@@ -79,6 +79,7 @@ create table if not exists public.request_cargo (
   stock_pallets integer not null default 0 check (stock_pallets >= 0),
   kdk_pallets integer not null default 0 check (kdk_pallets >= 0),
   packaging_qty integer not null default 0 check (packaging_qty >= 0),
+  equipment_pallet_places integer not null default 0 check (equipment_pallet_places >= 0),
   unique(request_id, cargo_type)
 );
 

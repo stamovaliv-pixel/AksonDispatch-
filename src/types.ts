@@ -23,6 +23,7 @@ export interface CargoLine {
   stock_pallets: number
   kdk_pallets: number
   packaging_qty: number
+  equipment_pallet_places: number
 }
 export interface TransportRequest {
   id: string

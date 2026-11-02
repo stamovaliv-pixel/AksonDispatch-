@@ -347,6 +347,7 @@ html[data-theme="dark"] .history-entry-icon { background: #1d3546; color: #8bc7e
 .request-modal .request-cargo-tiles { gap: 11px; }
 .request-modal .request-cargo-tiles .cargo-tile { min-height: 94px; align-content: center; }
 .request-modal .request-quantity-grid { margin-top: 14px; }
+.request-modal .request-quantity-grid.equipment-only { grid-template-columns: minmax(0, 1fr); }
 .request-modal .modal-actions { padding-left: 24px; padding-right: 24px; }
 .legend-dot.created { background: #367fbd; }
 .day-slot.request-created {
@@ -377,4 +378,122 @@ html[data-theme="dark"] .day-slot.request-created {
   .request-modal .modal-actions { padding-left: 16px; padding-right: 16px; }
   .request-modal .request-cargo-tiles { gap: 7px; }
   .request-modal .request-cargo-tiles .cargo-tile { min-height: 82px; }
+}
+
+/* 0.4.0 — role-aware calendar, compact filters and operational reports */
+.calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+.calendar-toolbar-copy { display: grid; gap: 4px; min-width: 0; }
+.calendar-toolbar-copy strong { font-size: 12px; color: var(--text); }
+.calendar-toolbar-copy span { font-size: 9px; line-height: 1.4; color: var(--muted); }
+.calendar-toolbar-month { flex: 0 0 auto; padding: 7px 11px; border: 1px solid var(--border); border-radius: 9px; color: var(--primary); font-size: 10px; font-weight: 800; background: var(--surface-soft); text-transform: capitalize; }
+.calendar-filters { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding: 9px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+.calendar-filters .search-field { height: 34px; min-width: 150px; }
+.calendar-filters select { height: 34px; min-width: 115px; max-width: 155px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text); background: var(--surface); font-size: 9px; }
+.calendar-filter-count { flex: 0 0 auto; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.calendar-filter-count b { color: var(--text); }
+.calendar-day { display: flex; flex-direction: column; min-width: 0; min-height: 105px; padding: 6px; }
+.calendar-day.selected { background: var(--surface); border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.calendar-day.today { border-color: #e9a0a3; }
+.calendar-day.outside .calendar-date-muted { pointer-events: none; }
+.day-slots-muted { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.day-slots-muted span { height: 34px; border-radius: 6px; background: transparent; }
+.calendar-date-button { display: flex; align-items: baseline; gap: 4px; width: 100%; min-height: 24px; padding: 0 1px; border: 0; background: transparent; color: var(--text); text-align: left; }
+.calendar-date-number { font-size: 11px; line-height: 1; font-weight: 800; }
+.calendar-date-month { color: var(--muted); font-size: 8px; font-weight: 600; text-transform: lowercase; }
+.calendar-date-button em { margin-left: auto; color: var(--muted); font-size: 8px; font-style: normal; }
+.calendar-day.today .calendar-date-number { display: inline-grid; place-items: center; min-width: 20px; min-height: 20px; padding: 0 4px; border-radius: 7px; color: #fff; background: var(--primary); }
+.day-slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; gap: 3px; margin-top: auto; padding-top: 6px; }
+.day-slot { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 0; height: 34px; padding: 2px 1px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-size: 8px; line-height: 1.05; overflow: hidden; }
+.day-slot.free { background: transparent; border: 1px dashed var(--border-strong); color: #8aa0b3; font-size: 16px; font-weight: 500; }
+.day-slot.free:hover { background: rgba(34, 153, 99, .08); border-color: #79c69d; color: #24935b; }
+.day-slot.occupied { background: #eef4f9; border-color: #d8e4ed; color: #36556b; }
+.day-slot.occupied b { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; font-weight: 800; }
+.day-slot.occupied small { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 6.5px; font-weight: 700; }
+.day-slot.status-created { background: #367fbd; color: #fff; border-color: #286da7; }
+.day-slot.status-search { background: #fff2d8; color: #946115; border-color: #f0d59b; }
+.day-slot.status-confirmed { background: #e7f1ff; color: #2d64a0; border-color: #b8d2f1; }
+.day-slot.status-completed { background: #e5f5eb; color: #24744a; border-color: #b5dfc2; }
+.day-slot.filtered-out { opacity: .28; filter: grayscale(.65); }
+.calendar-foot { gap: 12px; }
+.selected-slot.has-request { border-left-color: #8aa8c1; }
+.selected-slot-actions { flex-wrap: wrap; justify-content: flex-end; }
+.selected-slot-info strong span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.reports-page { display: grid; gap: 13px; }
+.reports-filter-card { display: flex; align-items: end; flex-wrap: wrap; gap: 11px; padding: 14px; }
+.reports-filter-copy { display: grid; flex: 1 1 230px; gap: 5px; padding-bottom: 3px; }
+.reports-filter-copy strong { font-size: 12px; }
+.reports-filter-copy small { max-width: 480px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.reports-filter-card > label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 700; }
+.reports-filter-card input { height: 36px; min-width: 142px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text); background: var(--surface); padding: 0 9px; font-size: 10px; }
+.report-kpis-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 2px 2px -3px; }
+.report-kpis-heading strong { color: var(--text); font-size: 11px; }
+.report-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.report-kpi { display: grid; gap: 6px; padding: 14px; }
+.report-kpi > span { color: var(--muted); font-size: 9px; font-weight: 700; }
+.report-kpi > strong { color: var(--text); font-size: 24px; line-height: 1.1; letter-spacing: -.04em; }
+.report-kpi > small { color: var(--muted-2); font-size: 8px; line-height: 1.4; }
+.reports-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.report-table-card, .report-chart-card { min-width: 0; padding: 15px; }
+.report-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 11px; }
+.report-section-heading h3 { margin: 0; color: var(--text); font-size: 11px; }
+.report-section-heading p { margin: 4px 0 0; color: var(--muted); font-size: 8px; }
+.report-table { width: 100%; border-collapse: collapse; font-size: 9px; }
+.report-table th { padding: 8px 7px; color: var(--muted); text-align: left; font-size: 8px; font-weight: 700; background: var(--surface-soft); }
+.report-table td { padding: 8px 7px; border-top: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.report-table td:first-child { max-width: 190px; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.report-table td strong { color: var(--text); }
+.report-bars { display: grid; gap: 12px; padding: 3px 0; }
+.report-bar-row { display: grid; gap: 5px; }
+.report-bar-meta { display: flex; justify-content: space-between; gap: 10px; color: var(--text); font-size: 9px; }
+.report-bar-meta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-bar-meta b { flex: 0 0 auto; }
+.report-bar-track { height: 8px; border-radius: 99px; background: var(--surface-soft); overflow: hidden; }
+.report-bar-track i { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: linear-gradient(90deg, #65a9d2, #307fae); }
+.report-bar-row small { color: var(--muted); font-size: 8px; }
+.report-empty { padding: 14px 4px; color: var(--muted); font-size: 9px; }
+.report-footer-note { padding: 3px 4px 8px; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.calendar-filters .icon-button { width: 32px; height: 32px; }
+html[data-theme="dark"] .calendar-toolbar-month,
+html[data-theme="dark"] .calendar-filters,
+html[data-theme="dark"] .report-table th { background: #141d27; }
+html[data-theme="dark"] .calendar-filters select,
+html[data-theme="dark"] .reports-filter-card input { background: #111923; color: var(--text); border-color: var(--border-strong); }
+html[data-theme="dark"] .day-slot.free { color: #91a3b4; border-color: #344454; }
+html[data-theme="dark"] .day-slot.status-created { background: #347fb9; color: #fff; border-color: #6db5e8; }
+html[data-theme="dark"] .day-slot.status-search { background: #493819; color: #f2cf88; border-color: #705522; }
+html[data-theme="dark"] .day-slot.status-confirmed { background: #1d3653; color: #a8ccf2; border-color: #34577e; }
+html[data-theme="dark"] .day-slot.status-completed { background: #183b2a; color: #a5d9b7; border-color: #2b6245; }
+html[data-theme="dark"] .report-bar-track { background: #202b37; }
+html[data-theme="dark"] .report-table td { border-color: var(--border); }
+@media (max-width: 1100px) {
+  .calendar-page { grid-template-columns: 1fr; }
+  .selected-day-card { max-width: none; }
+}
+@media (max-width: 760px) {
+  .report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .reports-grid { grid-template-columns: 1fr; }
+  .calendar-filters { flex-wrap: wrap; }
+  .calendar-filters .search-field { flex: 1 1 100%; }
+  .calendar-filters select { flex: 1 1 120px; max-width: none; }
+  .calendar-filter-count { margin-left: auto; }
+}
+@media (max-width: 520px) {
+  .calendar-toolbar { align-items: flex-start; flex-direction: column; }
+  .calendar-toolbar-month { align-self: flex-start; }
+  .calendar-day { min-height: 89px; padding: 4px; }
+  .calendar-date-number { font-size: 9px; }
+  .calendar-date-month { font-size: 7px; }
+  .day-slots { gap: 2px; padding-top: 4px; }
+  .day-slot { height: 30px; border-radius: 5px; }
+  .day-slot.occupied b { font-size: 6.5px; }
+  .day-slot.occupied small { font-size: 5.5px; }
+  .calendar-legend { gap: 8px 10px; }
+  .reports-filter-card { align-items: stretch; }
+  .reports-filter-card > label { flex: 1 1 calc(50% - 8px); }
+  .reports-filter-card input { width: 100%; min-width: 0; }
+  .reports-filter-card > .button { width: 100%; }
+  .report-kpi { padding: 11px; }
+  .report-kpi > strong { font-size: 20px; }
+  .report-table th, .report-table td { padding: 7px 5px; font-size: 8px; }
 }
