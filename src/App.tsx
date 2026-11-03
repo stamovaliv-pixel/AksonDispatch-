@@ -11,6 +11,7 @@ import { supabase, supabaseConfigured } from './lib/supabase'
 import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRequest } from './types'
 
 type View = 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'directory' | 'settings' | 'history'
+type RequestListFilter = 'all' | 'active' | RequestStatus
 type RequestDraft = {
   transport_date: string; slot_number: number; from_unit_id: string | null; from_other_address: string | null;
   to_unit_id: string | null; to_other_address: string | null; capacity_tons: number; loading_type: 'rear' | 'side';
@@ -62,7 +63,7 @@ function App() {
   const [password, setPassword] = useState('')
   const [loginBusy, setLoginBusy] = useState(false)
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | RequestStatus>('all')
+  const [statusFilter, setStatusFilter] = useState<RequestListFilter>('all')
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { return localStorage.getItem('akson-transport-theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' }
   })
@@ -567,7 +568,7 @@ function App() {
   const visibleRequests = useMemo(() => {
     const scoped = requests.filter((request) => profile?.role !== 'customer' || request.requester_id === profile.id)
     return scoped.filter((request) => {
-      const matchesStatus = statusFilter === 'all' || request.status === statusFilter
+      const matchesStatus = statusFilter === 'all' || (statusFilter === 'active' ? !['cancelled', 'completed'].includes(request.status) : request.status === statusFilter)
       const query = search.trim().toLowerCase()
       const fromName = resolveUnit(units, request.from_unit_id, request.from_other_address).toLowerCase()
       const toName = resolveUnit(units, request.to_unit_id, request.to_other_address).toLowerCase()
@@ -622,7 +623,7 @@ function App() {
         <div className="page-topline"><div><div className="breadcrumbs">АКСОН ЛОГИСТИКА <span>/</span> {pageTitles[view].toUpperCase()}</div><h1>{pageTitles[view]}</h1><p>{getSubtitle(view, profile)}</p></div><div className="page-actions">{(view === 'calendar' || view === 'requests') && <MonthControls month={month} setMonth={(nextMonth) => { setMonth(nextMonth); setSelectedDay(iso(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1))) }} />}{view === 'requests' && <button className="button button-secondary" title="Очистить строку поиска и фильтр статуса" onClick={() => { setSearch(''); setStatusFilter('all') }}><RefreshCw size={15} /> Сбросить фильтры</button>}{(view === 'calendar' || view === 'requests') && canCreateRequest && <button className="button button-primary" title="Создать новую заявку на транспорт" onClick={() => setRequestModal({ open: true })}><Plus size={16} /> Новая заявка</button>}</div></div>
         {error && <div className="message message-error"><AlertCircle size={17} /><span>{error}</span><button onClick={() => setError('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {notice && <div className="message message-success"><CheckCircle2 size={17} /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={15} /></button></div>}
-        {view === 'overview' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} />}
+        {view === 'overview' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} onOpenRequest={(request) => setRequestModal({ open: true, request })} onSelectFilter={(filter) => { setSearch(''); setStatusFilter(filter); setView('requests') }} />}
         {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
         {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
         {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
@@ -660,21 +661,25 @@ function getSubtitle(view: View, profile: Profile) {
   return 'Справочник бизнес-единиц и распределительных центров.'
 }
 
-function OverviewView({ profile, requests, occupancy, units, onNavigate, onRequest }: { profile: Profile; requests: TransportRequest[]; occupancy: SlotOccupancy[]; units: BusinessUnit[]; onNavigate: (view: View) => void; onRequest: () => void }) {
+function OverviewView({ profile, requests, occupancy, units, onNavigate, onRequest, onOpenRequest, onSelectFilter }: {
+  profile: Profile; requests: TransportRequest[]; occupancy: SlotOccupancy[]; units: BusinessUnit[];
+  onNavigate: (view: View) => void; onRequest: () => void;
+  onOpenRequest: (request: TransportRequest) => void; onSelectFilter: (filter: RequestListFilter) => void
+}) {
   const active = requests.filter((r) => !['cancelled', 'completed'].includes(r.status)).length
   const todayRequests = requests.filter((r) => r.transport_date === iso(today))
   const todayOccupancy = occupancy.filter((slot) => slot.transport_date === iso(today))
-  const stats = [
-    { label: 'Всего заявок', value: requests.length, icon: FileSpreadsheet, tone: 'blue', hint: 'За выбранный месяц' },
-    { label: 'В работе', value: active, icon: Activity, tone: 'orange', hint: 'Ожидают обработки' },
-    { label: 'Подтверждено', value: requests.filter((r) => r.status === 'confirmed').length, icon: CheckCircle2, tone: 'green', hint: 'Транспорт назначен' },
-    { label: 'Выполнено', value: requests.filter((r) => r.status === 'completed').length, icon: Truck, tone: 'violet', hint: 'Завершённые перевозки' }
+  const stats: { label: string; value: number; icon: typeof FileSpreadsheet; tone: string; hint: string; filter: RequestListFilter }[] = [
+    { label: 'Всего заявок', value: requests.length, icon: FileSpreadsheet, tone: 'blue', hint: 'За выбранный месяц · открыть все', filter: 'all' },
+    { label: 'В работе', value: active, icon: Activity, tone: 'orange', hint: 'Созданные, в поиске и подтверждённые', filter: 'active' },
+    { label: 'Подтверждено', value: requests.filter((r) => r.status === 'confirmed').length, icon: CheckCircle2, tone: 'green', hint: 'Транспорт назначен', filter: 'confirmed' },
+    { label: 'Выполнено', value: requests.filter((r) => r.status === 'completed').length, icon: Truck, tone: 'violet', hint: 'Завершённые перевозки', filter: 'completed' }
   ]
   const next = requests.filter((r) => r.transport_date >= iso(today) && !['cancelled', 'completed'].includes(r.status)).sort((a, b) => a.transport_date.localeCompare(b.transport_date) || a.slot_number - b.slot_number).slice(0, 5)
   return <div className="overview-page">
-    <div className="section-heading overview-section-heading"><div><h2>Показатели за месяц</h2><p>Текущая статистика заявок</p></div><button className="subtle-link" onClick={() => onNavigate('requests')}>Все заявки <ArrowRight size={15}/></button></div>
-    <div className="stats-grid">{stats.map((item) => { const Icon = item.icon; return <article className="stat-card" key={item.label}><div className={`stat-icon tone-${item.tone}`}><Icon size={19}/></div><div className="stat-label">{item.label}</div><div className="stat-value">{item.value}</div><div className="stat-hint">{item.hint}</div></article> })}</div>
-    <div className="overview-grid"><section className="surface-card upcoming-card"><div className="card-heading"><div><h3>Ближайшие заявки</h3><p>Предстоящие перевозки</p></div><button className="icon-button" onClick={() => onNavigate('requests')}><ArrowUpRight size={17}/></button></div>{next.length ? <div className="upcoming-list">{next.map((r) => <div className="upcoming-row" key={r.id}><div className="upcoming-date"><strong>{new Date(`${r.transport_date}T00:00:00`).getDate()}</strong><span>{new Date(`${r.transport_date}T00:00:00`).toLocaleDateString('ru-RU', { month: 'short' })}</span></div><div className="upcoming-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>Слот {r.slot_number} · {r.capacity_tons} т · №{r.request_no}</small></div><StatusBadge status={r.status}/></div>)}</div> : <EmptyState icon={CalendarDays} title="Предстоящих заявок нет" text="Когда появятся новые перевозки, они отобразятся здесь."/>}</section><section className="surface-card today-card"><div className="card-heading"><div><h3>Сегодня</h3><p>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</p></div><div className="today-count">{todayOccupancy.length} <span>из 3 слотов</span></div></div><div className="today-slot-list">{[1, 2, 3].map((slot) => { const request = todayRequests.find((r) => r.slot_number === slot && r.status !== 'cancelled'); const occupied = todayOccupancy.some((s) => s.slot_number === slot); return <div className="today-slot" key={slot}><div className={`slot-indicator ${occupied ? 'filled' : ''}`}>{slot}</div><div><strong>Слот {slot}</strong><small>{request ? `Заявка №${request.request_no}` : occupied ? 'Занят другой заявкой' : 'Свободен'}</small></div><span className={occupied ? 'slot-state occupied' : 'slot-state free'}>{occupied ? 'Занят' : 'Свободен'}</span></div> })}</div><button className="wide-subtle-button" onClick={() => onNavigate('calendar')}>Перейти к календарю <ArrowRight size={15}/></button></section></div>
+    <div className="section-heading overview-section-heading"><div><h2>Показатели за месяц</h2><p>Текущая статистика заявок</p></div><button className="subtle-link" onClick={() => onSelectFilter('all')}>Все заявки <ArrowRight size={15}/></button></div>
+    <div className="stats-grid">{stats.map((item) => { const Icon = item.icon; return <button type="button" className="stat-card stat-card-button" key={item.label} onClick={() => onSelectFilter(item.filter)} title={`Открыть заявки: ${item.label.toLowerCase()}`} aria-label={`Открыть заявки: ${item.label}, ${item.value}`}><div className={`stat-icon tone-${item.tone}`}><Icon size={19}/></div><div className="stat-label">{item.label}</div><div className="stat-value">{item.value}</div><div className="stat-hint">{item.hint}</div></button> })}</div>
+    <div className="overview-grid"><section className="surface-card upcoming-card"><div className="card-heading"><div><h3>Ближайшие заявки</h3><p>Предстоящие перевозки</p></div><button className="icon-button" onClick={() => onNavigate('requests')} title="Открыть все заявки"><ArrowUpRight size={17}/></button></div>{next.length ? <div className="upcoming-list">{next.map((r) => <button type="button" className="upcoming-row upcoming-row-button" key={r.id} onClick={() => onOpenRequest(r)} title={`Открыть заявку №${r.request_no}`} aria-label={`Открыть заявку №${r.request_no}, ${dateLabel(r.transport_date)}, ${statusNames[r.status]}`}><div className="upcoming-date"><strong>{new Date(`${r.transport_date}T00:00:00`).getDate()}</strong><span>{new Date(`${r.transport_date}T00:00:00`).toLocaleDateString('ru-RU', { month: 'short' })}</span></div><div className="upcoming-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>Слот {r.slot_number} · {r.capacity_tons} т · №{r.request_no}</small></div><StatusBadge status={r.status}/></button>)}</div> : <EmptyState icon={CalendarDays} title="Предстоящих заявок нет" text="Когда появятся новые перевозки, они отобразятся здесь."/>}</section><section className="surface-card today-card"><div className="card-heading"><div><h3>Сегодня</h3><p>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</p></div><div className="today-count">{todayOccupancy.length} <span>из 3 слотов</span></div></div><div className="today-slot-list">{[1, 2, 3].map((slot) => { const request = todayRequests.find((r) => r.slot_number === slot && r.status !== 'cancelled'); const occupied = todayOccupancy.some((s) => s.slot_number === slot); return <div className="today-slot" key={slot}><div className={`slot-indicator ${occupied ? 'filled' : ''}`}>{slot}</div><div><strong>Слот {slot}</strong><small>{request ? `Заявка №${request.request_no}` : occupied ? 'Занят другой заявкой' : 'Свободен'}</small></div><span className={occupied ? 'slot-state occupied' : 'slot-state free'}>{occupied ? 'Занят' : 'Свободен'}</span></div> })}</div><button className="wide-subtle-button" onClick={() => onNavigate('calendar')}>Перейти к календарю <ArrowRight size={15}/></button></section></div>
     <div className="overview-bottom"><div className="info-mini"><div className="mini-icon"><Building2 size={18}/></div><div><strong>{units.filter((u) => u.kind === 'BE').length} бизнес-единиц</strong><small>В активном справочнике</small></div></div><div className="info-mini"><div className="mini-icon purple"><Warehouse size={18}/></div><div><strong>{units.filter((u) => u.kind === 'RC').length} распределительных центров</strong><small>Доступно для маршрутов</small></div></div><div className="info-mini"><div className="mini-icon green"><ShieldCheck size={18}/></div><div><strong>{roleNames[profile.role]}</strong><small>Ваша роль в системе</small></div></div></div>
     {profile.role === 'customer' && <button className="floating-create" onClick={onRequest}><Plus size={19}/><span>Создать заявку</span></button>}
   </div>
@@ -822,7 +827,7 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
 
 function RequestsView({ requests, units, profile, search, setSearch, statusFilter, setStatusFilter, onStatus, onEdit, onCancel, onDownloadRegistry }: {
   requests: TransportRequest[]; units: BusinessUnit[]; profile: Profile; search: string; setSearch: (v: string) => void;
-  statusFilter: 'all' | RequestStatus; setStatusFilter: (v: 'all' | RequestStatus) => void;
+  statusFilter: RequestListFilter; setStatusFilter: (v: RequestListFilter) => void;
   onStatus: (r: TransportRequest, s: RequestStatus) => void; onEdit: (r: TransportRequest) => void; onCancel: (r: TransportRequest) => void;
   onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void
 }) {
@@ -839,7 +844,7 @@ function RequestsView({ requests, units, profile, search, setSearch, statusFilte
   return <div className="requests-page">
     <section className="surface-card filters-card">
       <div className="search-field"><Search size={17}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по номеру, маршруту или логину" title="Номер заявки, маршрут или логин заказчика"/></div>
-      <div className="filter-select"><Filter size={16}/><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | RequestStatus)} title="Отобрать заявки по статусу"><option value="all">Все статусы</option>{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
+      <div className="filter-select"><Filter size={16}/><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as RequestListFilter)} title="Отобрать заявки по статусу"><option value="all">Все статусы</option><option value="active">В работе</option>{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
       <span className="results-count">Найдено: <strong>{requests.length}</strong></span>
       <button className="button button-secondary button-compact" onClick={exportCsv} disabled={!requests.length} title="Выгрузить отображаемые заявки в CSV"><FileSpreadsheet size={14}/> Выгрузить CSV</button>
     </section>
@@ -1109,6 +1114,9 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const [currentRegistryPath, setCurrentRegistryPath] = useState(request?.registry_file_path || null)
   const [currentRegistryName, setCurrentRegistryName] = useState(request?.registry_file_name || null)
   const [registryUploading, setRegistryUploading] = useState(false)
+  const existingRegistryPath = currentRegistryPath || request?.registry_file_path || null
+  const existingRegistryName = currentRegistryName || request?.registry_file_name || null
+  const canDownloadCurrentRegistry = !!request && (profile.role === 'dispatcher' || profile.role === 'utz' || profile.role === 'admin' || (profile.role === 'customer' && isOwnRequest))
   const editableFields = editing && canEditFields
   const registryCanUpload = editing && canEditRegistry
   const registryOnlyMode = !!request && profile.role === 'customer' && request.status !== 'created'
@@ -1227,8 +1235,8 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
               <button type="button" className="button button-secondary" onClick={onDownloadTemplate} disabled={!registryTemplatePath} title={registryTemplatePath ? `Скачать шаблон ${registryTemplateName || ''}` : 'Администратор ещё не загрузил шаблон'}><Download size={15}/> Скачать шаблон</button>
             </div>
             {registryFile && <div className="registry-file-status"><FileText size={16}/><span>Выбран файл: <strong>{registryFile.name}</strong><small>{(registryFile.size / 1024 / 1024).toFixed(2)} МБ</small></span>{request && registryOnlyMode ? <button type="button" className="button button-primary button-compact" onClick={uploadRegistryNow} disabled={registryUploading}>{registryUploading ? 'Загружаем…' : 'Загрузить реестр'}</button> : <button type="button" className="icon-button small" onClick={() => setRegistryFile(null)} title="Отменить выбор файла"><X size={14}/></button>}</div>}
-            {!registryFile && currentRegistryPath && <div className="registry-file-status"><FileText size={16}/><span>Прикреплён реестр: <strong>{currentRegistryName || 'Файл реестра'}</strong><small>Файл сохранён в карточке заявки</small></span><button type="button" className="button button-secondary button-compact" onClick={() => onDownloadRegistry(currentRegistryPath, currentRegistryName)}><Download size={14}/> Скачать</button></div>}
-            {!registryFile && !currentRegistryPath && <p className="registry-file-hint">Реестр прикладывается по желанию. Форматы: XLSX, XLS, CSV, ODS. Максимальный размер — 20 МБ.</p>}
+            {existingRegistryPath && canDownloadCurrentRegistry && <div className="registry-file-status registry-current-file"><FileText size={16}/><span>Текущий реестр: <strong>{existingRegistryName || 'Вложенный реестр'}</strong><small>Файл, прикреплённый к этой заявке</small></span><button type="button" className="button button-secondary button-compact" onClick={() => onDownloadRegistry(existingRegistryPath, existingRegistryName || 'Реестр_заявки')} title="Скачать текущий реестр заявки"><Download size={14}/> Скачать реестр</button></div>}
+            {!registryFile && !existingRegistryPath && <p className="registry-file-hint">Реестр прикладывается по желанию. Форматы: XLSX, XLS, CSV, ODS. Максимальный размер — 20 МБ.</p>}
             {registryOnlyMode && canEditRegistry && <small className="field-hint">Заказчик может загрузить или заменить реестр до статуса «Выполнена» или «Отменена».</small>}
           </div>
 

@@ -111,6 +111,14 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .art-badge span { width: 6px; height: 6px; background: #2ab777; display: inline-block; border-radius: 50%; margin-right: 5px; }
 .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
 .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; padding: 14px 16px; min-height: 130px; box-shadow: var(--shadow); }
+/* Interactive overview cards and upcoming request rows */
+.stat-card-button { width: 100%; text-align: left; font: inherit; color: var(--text); cursor: pointer; transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.stat-card-button:hover { transform: translateY(-2px); border-color: rgba(206, 44, 53, .34); box-shadow: 0 8px 20px rgba(28, 44, 64, .09); }
+.stat-card-button:focus-visible, .upcoming-row-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.upcoming-row-button { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; transition: background .15s ease; }
+.upcoming-row-button:hover { background: rgba(128, 145, 165, .07); }
+.registry-current-file { margin-top: 8px; }
+
 .stat-icon { width: 33px; height: 33px; border-radius: 9px; display: grid; place-items: center; margin-bottom: 9px; }
 .tone-blue { background: #eaf5fd; color: #2388c2; }.tone-orange { background: #fff4e8; color: #dc8b31; }.tone-green { background: #eaf8f0; color: #239b60; }.tone-violet { background: #f2edff; color: #8662c5; }
 .stat-label { color: var(--muted); font-size: 10px; font-weight: 600; }
