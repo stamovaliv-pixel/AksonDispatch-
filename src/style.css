@@ -573,3 +573,28 @@ html[data-theme="dark"] .registry-attachment-panel { background: #111923; border
   .registry-file-status { align-items: flex-start; flex-wrap: wrap; }
   .registry-file-status > span { min-width: calc(100% - 35px); }
 }
+
+/* v0.4.4: request detail/edit states and role booking window */
+.request-modal-heading-actions { display: flex; align-items: flex-start; gap: 7px; flex: 0 0 auto; }
+.request-modal-heading-actions .icon-button.active { color: var(--primary); border-color: var(--primary); background: rgba(49, 128, 183, .08); }
+.request-view-status, .request-view-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; margin-bottom: 13px; background: var(--surface-soft, #f7f9fb); border: 1px solid var(--border); border-radius: 9px; }
+.request-view-status > span, .request-view-meta > span { color: var(--muted); font-size: 9px; font-weight: 700; }
+.request-view-meta { display: grid; justify-content: stretch; gap: 4px; }
+.request-view-meta strong { font-size: 11px; color: var(--text); }
+.request-modal .request-field textarea,
+.request-modal textarea.request-field,
+.request-modal .request-field textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 41px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); padding: 9px 11px; outline: 0; font: inherit; font-size: 11px; line-height: 1.4; }
+.request-modal .request-field textarea:focus { border-color: #7db6d3; box-shadow: 0 0 0 3px rgba(56, 147, 194, .12); }
+.request-modal input:disabled, .request-modal select:disabled, .request-modal textarea:disabled { opacity: .85; cursor: default; }
+.calendar-day.booking-unavailable { opacity: .52; background: #f3f5f7; }
+.calendar-day.booking-unavailable .calendar-date-button { color: #8793a1; }
+.day-slot.booking-disabled { cursor: not-allowed; border-style: solid; opacity: .42; }
+.empty-filter-result { display: flex; align-items: center; gap: 8px; padding: 20px 12px; color: var(--muted); font-size: 10px; border: 1px dashed var(--border-strong); border-radius: 9px; }
+html[data-theme="dark"] .request-view-status, html[data-theme="dark"] .request-view-meta { background: #141e29; border-color: var(--border); }
+html[data-theme="dark"] .calendar-day.booking-unavailable { background: #18212b; }
+html[data-theme="dark"] .request-modal .request-field textarea { background: #111923; color: var(--text); border-color: var(--border-strong); }
+@media (max-width: 700px) {
+  .request-modal-heading-actions { gap: 5px; }
+  .request-modal .request-field textarea { min-height: 56px; }
+  .calendar-day.booking-unavailable { opacity: .48; }
+}

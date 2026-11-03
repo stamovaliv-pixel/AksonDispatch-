@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertCircle, ArrowRight, ArrowUpRight,
   Building2, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight,
@@ -14,7 +14,7 @@ type View = 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'direct
 type RequestDraft = {
   transport_date: string; slot_number: number; from_unit_id: string | null; from_other_address: string | null;
   to_unit_id: string | null; to_other_address: string | null; capacity_tons: number; loading_type: 'rear' | 'side';
-  cargo_types: string[]; stock_pallets: number; kdk_pallets: number; packaging_qty: number; equipment_pallet_places: number; requester_id?: string; registry_file?: File | null
+  cargo_types: string[]; stock_pallets: number; kdk_pallets: number; packaging_qty: number; equipment_pallet_places: number; requester_id?: string; registry_file?: File | null; transport_task_number: string; request_comment: string
 }
 type UnitDraft = { id?: string | null; code: string; name: string; kind: 'BE' | 'RC'; address: string }
 type AuditRecord = { id: number; actor_id: string | null; action: string; entity_type: string; entity_id: string | null; details: Record<string, any>; created_at: string; actor_username?: string | null }
@@ -44,6 +44,7 @@ const errorText = (e: unknown) => e instanceof Error ? e.message : 'Не уда�
 function App() {
   const [session, setSession] = useState<any>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
+  const realtimeRefreshTimer = useRef<number | null>(null)
   const [units, setUnits] = useState<BusinessUnit[]>([])
   const [requests, setRequests] = useState<TransportRequest[]>([])
   const [occupancy, setOccupancy] = useState<SlotOccupancy[]>([])
@@ -132,16 +133,38 @@ function App() {
       if (profileError || !data) { setError(`Не удалось загрузить профиль: ${profileError?.message || 'профиль не найден'}`); return }
       if (!data.is_active) { await supabase?.auth.signOut(); setError('Учётная запись заблокирована администратором.'); return }
       setProfile(data as Profile)
+      setView(data.role === 'utz' ? 'calendar' : 'overview')
       setError('')
     })
     return () => { alive = false }
   }, [session])
 
   useEffect(() => { if (profile) void loadData() }, [profile, month])
+
+  // Receive a minimal server-side broadcast when any request changes.
+  // The message carries no request data; each role reloads through its own RLS scope.
+  useEffect(() => {
+    if (!profile || !supabase) return
+    const channel = supabase
+      .channel('transport-calendar', { config: { private: true } })
+      .on('broadcast', { event: 'transport-request-updated' }, () => {
+        if (realtimeRefreshTimer.current !== null) window.clearTimeout(realtimeRefreshTimer.current)
+        realtimeRefreshTimer.current = window.setTimeout(() => {
+          realtimeRefreshTimer.current = null
+          void loadData()
+        }, 180)
+      })
+      .subscribe()
+    return () => {
+      if (realtimeRefreshTimer.current !== null) window.clearTimeout(realtimeRefreshTimer.current)
+      realtimeRefreshTimer.current = null
+      void supabase.removeChannel(channel)
+    }
+  }, [profile?.id, month.getTime()])
   useEffect(() => {
     if (!profile) return
     void loadSettings()
-    if (profile.role === 'admin') void loadPeople()
+    if (profile.role === 'admin' || profile.role === 'dispatcher') void loadPeople()
   }, [profile])
   useEffect(() => {
     if (!profile || !['dispatcher', 'admin'].includes(profile.role) || view !== 'history') return
@@ -181,7 +204,7 @@ function App() {
   }
 
   async function loadPeople() {
-    if (!supabase || profile?.role !== 'admin') return
+    if (!supabase || !['admin', 'dispatcher'].includes(profile?.role || '')) return
     const { data, error: peopleError } = await supabase.from('profiles')
       .select('id,username,role,business_unit_id,default_from_id,is_active,created_at')
       .order('username')
@@ -274,6 +297,35 @@ function App() {
     await downloadPrivateFile(registryTemplatePath, registryTemplateName || 'Шаблон_реестра')
   }
 
+  async function uploadRequestRegistry(request: TransportRequest, file: File) {
+    if (!supabase || !profile) throw new Error('Нет подключения к Supabase.')
+    const ownCustomer = profile.role === 'customer' && request.requester_id === profile.id
+    const staff = profile.role === 'dispatcher' || profile.role === 'admin'
+    if (!staff && !(ownCustomer && !['completed', 'cancelled'].includes(request.status))) {
+      throw new Error('Загрузка реестра для этой заявки недоступна вашей роли или статусу.')
+    }
+    const extension = file.name.split('.').pop()?.toLowerCase() || ''
+    if (!['xlsx', 'xls', 'csv', 'ods'].includes(extension)) throw new Error('Реестр должен быть в формате XLSX, XLS, CSV или ODS.')
+    if (file.size > 20 * 1024 * 1024) throw new Error('Размер реестра не должен превышать 20 МБ.')
+    const safeName = file.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(-120) || `registry.${extension}`
+    const storagePath = `requests/${request.id}/${crypto.randomUUID()}-${safeName}`
+    const { error: uploadError } = await supabase.storage.from('dispatch-files').upload(storagePath, file, { upsert: false, contentType: file.type || 'application/octet-stream' })
+    if (uploadError) throw uploadError
+    const { error: attachError } = await supabase.from('transport_requests').update({ registry_file_path: storagePath, registry_file_name: file.name }).eq('id', request.id)
+    if (attachError) {
+      await supabase.storage.from('dispatch-files').remove([storagePath])
+      throw attachError
+    }
+    if (request.registry_file_path) {
+      const { error: removeError } = await supabase.storage.from('dispatch-files').remove([request.registry_file_path])
+      if (removeError) console.warn('Не удалось удалить заменённый реестр:', removeError.message)
+    }
+    setNotice(`Реестр заявки №${request.request_no} загружен.`)
+    await loadData()
+    if (staff) await loadHistory()
+    return { path: storagePath, name: file.name }
+  }
+
   async function uploadRegistryTemplate(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -314,17 +366,17 @@ function App() {
 
   async function saveRequest(payload: RequestDraft, existing?: TransportRequest) {
     if (!supabase || !profile) return
-    const mayCreate = profile.role === 'customer' || profile.role === 'admin'
-    const mayEdit = profile.role === 'admin' || profile.role === 'dispatcher' || (profile.role === 'customer' && !!existing && existing.requester_id === profile.id && existing.status === 'created')
+    const staff = profile.role === 'dispatcher' || profile.role === 'admin'
+    const mayCreate = profile.role === 'customer' || staff
+    const mayEdit = staff || (profile.role === 'customer' && !!existing && existing.requester_id === profile.id && existing.status === 'created')
     if (existing ? !mayEdit : !mayCreate) { setError('У вашей роли нет прав на это действие.'); return }
+    if (staff && payload.transport_date < iso(today)) { setError('Сотрудники могут создавать и переносить заявки только на текущую или будущую дату.'); return }
     setSaving(true); setError('')
     try {
-      const adminMode = profile.role === 'admin'
-      const requesterId = adminMode ? (payload.requester_id || existing?.requester_id || '') : (existing?.requester_id || profile.id)
-      const requesterProfile = adminMode ? people.find((person) => person.id === requesterId) : profile
-      if (!requesterId || !requesterProfile) throw new Error('Выберите заказчика из списка пользователей.')
-      // A customer may intentionally have no profile BE. The physical origin is still
-      // mandatory in the route fields and remains independent from this profile link.
+      const maySelectRequester = profile.role === 'admin' || (profile.role === 'dispatcher' && !existing)
+      const requesterId = maySelectRequester ? (payload.requester_id || existing?.requester_id || '') : (existing?.requester_id || profile.id)
+      const requesterProfile = requesterId === profile.id ? profile : people.find((person) => person.id === requesterId)
+      if (!requesterId || !requesterProfile || requesterProfile.role !== 'customer' || !requesterProfile.is_active) throw new Error('Выберите действующего заказчика из списка пользователей.')
       const businessUnitId = existing && existing.requester_id === requesterId
         ? existing.business_unit_id
         : (requesterProfile.business_unit_id || null)
@@ -333,7 +385,9 @@ function App() {
         transport_date: payload.transport_date, slot_number: payload.slot_number,
         from_unit_id: payload.from_unit_id, from_other_address: payload.from_other_address,
         to_unit_id: payload.to_unit_id, to_other_address: payload.to_other_address,
-        capacity_tons: payload.capacity_tons, loading_type: payload.loading_type
+        capacity_tons: payload.capacity_tons, loading_type: payload.loading_type,
+        transport_task_number: payload.transport_task_number.trim() || null,
+        request_comment: payload.request_comment.trim() || null
       }
       let id = existing?.id
       if (existing) {
@@ -387,7 +441,7 @@ function App() {
       setNotice(existing ? 'Заявка обновлена.' : 'Заявка создана.')
       await loadData(savedMonth)
       if (registryWarning) setError(`${registryWarning} Заявка сохранена; реестр можно добавить позднее, открыв её на редактирование.`)
-      if (profile.role === 'dispatcher' || profile.role === 'admin') await loadHistory()
+      if (staff) await loadHistory()
     } catch (e) { setError(errorText(e)) }
     finally { setSaving(false) }
   }
@@ -398,9 +452,10 @@ function App() {
     const canCustomerCancel = profile.role === 'customer' && request.requester_id === profile.id && request.status === 'created' && status === 'cancelled'
     if (!canStaffChange && !canCustomerCancel) { setError('У вашей роли нет прав на изменение статуса этой заявки.'); return }
     setError('')
-    const { error: updateError } = await supabase.from('transport_requests').update({ status }).eq('id', request.id)
+    const { data: updated, error: updateError } = await supabase.from('transport_requests').update({ status }).eq('id', request.id).select('id,status').maybeSingle()
     if (updateError) setError(updateError.message)
-    else { setNotice(`Статус заявки №${request.request_no} изменён.`); await loadData(); if (profile.role === 'dispatcher' || profile.role === 'admin') await loadHistory() }
+    else if (!updated) setError('Статус не изменён: база данных не разрешила обновление этой заявки.')
+    else { setNotice(`Статус заявки №${request.request_no} изменён и сохранён в Supabase.`); await loadData(); if (profile.role === 'dispatcher' || profile.role === 'admin') await loadHistory() }
   }
 
   async function cancelRequest(request: TransportRequest) {
@@ -514,7 +569,7 @@ function App() {
       const fromName = resolveUnit(units, request.from_unit_id, request.from_other_address).toLowerCase()
       const toName = resolveUnit(units, request.to_unit_id, request.to_other_address).toLowerCase()
       const requester = request.profiles?.username?.toLowerCase() || ''
-      const matchesQuery = !query || String(request.request_no).includes(query) || fromName.includes(query) || toName.includes(query) || requester.includes(query)
+      const matchesQuery = !query || String(request.request_no).includes(query) || fromName.includes(query) || toName.includes(query) || requester.includes(query) || (request.transport_task_number || '').toLowerCase().includes(query) || (request.request_comment || '').toLowerCase().includes(query)
       return matchesStatus && matchesQuery
     })
   }, [requests, profile, statusFilter, search, units])
@@ -530,7 +585,7 @@ function App() {
   if (!session || !profile) return <LoginScreen login={login} password={password} setLogin={setLogin} setPassword={setPassword} signIn={signIn} busy={loginBusy} error={error} />
 
   const canViewStaffPages = profile.role === 'dispatcher' || profile.role === 'admin'
-  const canCreateRequest = profile.role === 'customer' || profile.role === 'admin'
+  const canCreateRequest = profile.role === 'customer' || profile.role === 'dispatcher' || profile.role === 'admin'
   const navItems: { key: View; label: string; icon: typeof LayoutDashboard; admin?: boolean; staff?: boolean }[] = [
     { key: 'overview', label: 'Обзор', icon: LayoutDashboard },
     { key: 'calendar', label: 'Календарь', icon: CalendarDays },
@@ -553,7 +608,7 @@ function App() {
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
         <nav className="side-nav">
-          {navItems.filter((item) => (!item.admin || isAdmin) && (!item.staff || canViewStaffPages)).map((item) => {
+          {navItems.filter((item) => (profile.role !== 'utz' || item.key !== 'overview') && (!item.admin || isAdmin) && (!item.staff || canViewStaffPages)).map((item) => {
             const Icon = item.icon
             return <button key={item.key} className={`nav-link ${view === item.key ? 'active' : ''}`} onClick={() => { setView(item.key); setSidebarOpen(false); setError(''); setNotice('') }}><Icon size={18} /><span>{item.label}</span>{item.key === 'requests' && activeRequests.length > 0 && <em>{activeRequests.length}</em>}</button>
           })}
@@ -565,7 +620,7 @@ function App() {
         {error && <div className="message message-error"><AlertCircle size={17} /><span>{error}</span><button onClick={() => setError('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {notice && <div className="message message-success"><CheckCircle2 size={17} /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {view === 'overview' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} />}
-        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} />}
+        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} />}
         {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} />}
         {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
         {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
@@ -576,7 +631,7 @@ function App() {
       </main>
     </div>
     {editingPerson && <UserEditModal person={editingPerson} units={units} draft={userEditDraft} setDraft={setUserEditDraft} onSubmit={saveUserEdit} onClose={() => setEditingPerson(null)} saving={saving} currentUserId={profile.id} />}
-    {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} saving={saving} registryTemplateName={registryTemplateName} registryTemplatePath={registryTemplatePath} onDownloadTemplate={downloadRegistryTemplate} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
+    {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} onUploadRegistry={uploadRequestRegistry} saving={saving} registryTemplateName={registryTemplateName} registryTemplatePath={registryTemplatePath} onDownloadTemplate={downloadRegistryTemplate} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
     {loading && <div className="loading-pill"><span className="spinner" /> Обновляем данные…</div>}
   </div>
 }
@@ -622,18 +677,17 @@ function OverviewView({ profile, requests, occupancy, units, onNavigate, onReque
   </div>
 }
 
-function CalendarView({ month, days, requests, allRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, onCreate, onOpen, onCancel }: {
+function CalendarView({ month, days, requests, allRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, minCreateDate, onCreate, onOpen, onCancel }: {
   month: Date; days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; slots: CalendarSlot[]; occupancy: SlotOccupancy[];
-  selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[];
+  selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[]; minCreateDate: string;
   onCreate: (slot: number, date: string) => void; onOpen: (request: TransportRequest) => void; onCancel: (request: TransportRequest) => void
 }) {
   const [query, setQuery] = useState('')
   const [cargoFilter, setCargoFilter] = useState('all')
   const [capacityFilter, setCapacityFilter] = useState('all')
-  const canCreate = profile.role === 'customer' || profile.role === 'admin'
+  const canCreate = profile.role === 'customer' || profile.role === 'dispatcher' || profile.role === 'admin'
   const canOperate = profile.role === 'dispatcher' || profile.role === 'admin'
   const isCustomer = profile.role === 'customer'
-  const selectedDateRequests = requests.filter((r) => r.transport_date === selectedDay && r.status !== 'cancelled')
   const normalizedQuery = query.trim().toLowerCase()
 
   function matchesRequest(request?: TransportRequest) {
@@ -643,12 +697,17 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
     const from = request.from_other_address || `${fromUnit?.code || ''} ${fromUnit?.name || ''}`
     const to = request.to_other_address || `${toUnit?.code || ''} ${toUnit?.name || ''}`
     const customer = request.profiles?.username || ''
-    const matchesText = !normalizedQuery || `${customer} ${from} ${to} ${request.request_no}`.toLowerCase().includes(normalizedQuery)
+    const matchesText = !normalizedQuery || `${customer} ${from} ${to} ${request.request_no} ${request.transport_task_number || ''} ${request.request_comment || ''}`.toLowerCase().includes(normalizedQuery)
     const matchesCargo = cargoFilter === 'all' || (request.request_cargo || []).some((item) => item.cargo_type === cargoFilter)
     const matchesCapacity = capacityFilter === 'all' || String(request.capacity_tons) === capacityFilter
     return matchesText && matchesCargo && matchesCapacity
   }
 
+  const filterActive = !!normalizedQuery || cargoFilter !== 'all' || capacityFilter !== 'all'
+  const selectedDateRequests = allRequests.filter((r) => r.transport_date === selectedDay && r.status !== 'cancelled' && matchesRequest(r))
+  const selectedSlotNumbers = filterActive
+    ? selectedDateRequests.map((r) => r.slot_number).sort((a, b) => a - b)
+    : [1, 2, 3]
   const matchedCount = allRequests.filter((r) => r.status !== 'cancelled' && matchesRequest(r)).length
   const activeSlotCount = new Set([...slots, ...occupancy].map((slot) => `${slot.transport_date}:${slot.slot_number}`)).size
   const shortStatus: Record<RequestStatus, string> = { created: 'Создана', search: 'Поиск', confirmed: 'Подтв.', completed: 'Выполнена', cancelled: 'Отменена' }
@@ -656,7 +715,7 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
   return <div className="calendar-page">
     <section className="surface-card calendar-card">
       <div className="calendar-toolbar">
-        <div className="calendar-toolbar-copy"><strong>Транспортные слоты</strong><span>Нажмите на дату, чтобы открыть её слоты. Нажмите на занятый слот, чтобы открыть заявку.</span></div>
+        <div className="calendar-toolbar-copy"><strong>Транспортные слоты</strong><span>Нажмите на дату, чтобы открыть её слоты. Нажмите на занятую заявку, чтобы просмотреть карточку.</span></div>
         <div className="calendar-toolbar-month">{monthTitle(month)}</div>
       </div>
       {!isCustomer && <div className="calendar-filters">
@@ -685,12 +744,13 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
           const dateSlots = slots.filter((r) => r.transport_date === key)
           const occupied = new Set([...dateSlots.map((r) => r.slot_number), ...dateRequests.map((r) => r.slot_number), ...occupancy.filter((r) => r.transport_date === key).map((r) => r.slot_number)])
           const isToday = key === iso(today)
+          const unavailableForCustomer = isCustomer && key < minCreateDate
           if (!inMonth) return <article key={key} className="calendar-day outside" aria-hidden="true">
             <div className="calendar-date-button calendar-date-muted"><span className="calendar-date-number">{day.getDate()}</span><span className="calendar-date-month">{day.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '')}</span></div>
             <div className="day-slots day-slots-muted"><span/><span/><span/></div>
           </article>
-          return <article key={key} className={`calendar-day ${selectedDay === key ? 'selected' : ''} ${isToday ? 'today' : ''}`}>
-            <button type="button" className="calendar-date-button" onClick={() => setSelectedDay(key)} title={`Показать слоты на ${dateLabel(key)}`}>
+          return <article key={key} className={`calendar-day ${selectedDay === key ? 'selected' : ''} ${isToday ? 'today' : ''} ${unavailableForCustomer ? 'booking-unavailable' : ''}`}>
+            <button type="button" className="calendar-date-button" onClick={() => setSelectedDay(key)} title={unavailableForCustomer ? `Создание недоступно до ${dateLabel(minCreateDate)}. Можно просматривать занятость.` : `Показать слоты на ${dateLabel(key)}`}>
               <span className="calendar-date-number">{day.getDate()}</span>
               <span className="calendar-date-month">{day.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '')}</span>
               {occupied.size > 0 && <em>{occupied.size}/3</em>}
@@ -702,10 +762,11 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
                 const busyFallback = occupancy.some((r) => r.transport_date === key && r.slot_number === slotNo)
                 const busy = !!request || !!summary || busyFallback
                 const matches = !request || matchesRequest(request)
-                if (!busy) return <button key={slotNo} type="button" className="day-slot free" title={canCreate ? `Создать заявку · слот ${slotNo}` : `Свободный слот ${slotNo}`} onClick={() => { setSelectedDay(key); if (canCreate) onCreate(slotNo, key) }}>+</button>
+                if (!busy) return <button key={slotNo} type="button" className={`day-slot free ${unavailableForCustomer ? 'booking-disabled' : ''}`} disabled={isCustomer && unavailableForCustomer} title={unavailableForCustomer ? `Запись доступна с ${dateLabel(minCreateDate)}` : canCreate ? `Создать заявку · слот ${slotNo}` : `Свободный слот ${slotNo}`} onClick={() => { setSelectedDay(key); if (canCreate && key >= minCreateDate) onCreate(slotNo, key) }}>+</button>
                 const status = request?.status || summary?.status
                 const beCode = summary?.from_be_code || (request ? resolveUnit(units, request.from_unit_id, request.from_other_address) : 'Занято')
-                return <button key={slotNo} type="button" className={`day-slot occupied ${status ? statusClasses[status] : 'status-search'} ${matches ? '' : 'filtered-out'}`} title={request ? `Слот ${slotNo} · ${beCode} · ${statusNames[request.status]} · заявка №${request.request_no}` : `Слот ${slotNo} · ${beCode} · ${status ? statusNames[status] : 'Занято'}`} onClick={() => { setSelectedDay(key); if (request) onOpen(request) }}>
+                const customerCanOpen = !isCustomer || request?.requester_id === profile.id
+                return <button key={slotNo} type="button" className={`day-slot occupied ${status ? statusClasses[status] : 'status-search'} ${matches ? '' : 'filtered-out'}`} title={request ? `Слот ${slotNo} · ${beCode} · ${statusNames[request.status]} · заявка №${request.request_no}` : `Слот ${slotNo} · ${beCode} · ${status ? statusNames[status] : 'Занято'}`} onClick={() => { setSelectedDay(key); if (request && customerCanOpen) onOpen(request) }}>
                   <b>{beCode}</b><small>{status ? shortStatus[status] : 'Занято'}</small>
                 </button>
               })}
@@ -717,14 +778,14 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
     </section>
 
     <section className="surface-card selected-day-card">
-      <div className="card-heading"><div><h3>{dateLabel(selectedDay, { day: 'numeric', month: 'long', year: 'numeric' })}</h3><p>Три транспортных слота на выбранную дату</p></div><div className="day-count">{selectedDateRequests.length}<small>заявок</small></div></div>
+      <div className="card-heading"><div><h3>{dateLabel(selectedDay, { day: 'numeric', month: 'long', year: 'numeric' })}</h3><p>{filterActive ? 'Заявки, соответствующие фильтрам' : 'Три транспортных слота на выбранную дату'}</p></div><div className="day-count">{selectedDateRequests.length}<small>заявок</small></div></div>
       <div className="selected-slots">
-        {[1, 2, 3].map((slotNo) => {
-          const request = allRequests.find((r) => r.transport_date === selectedDay && r.slot_number === slotNo && r.status !== 'cancelled')
+        {selectedSlotNumbers.length ? selectedSlotNumbers.map((slotNo) => {
+          const request = allRequests.find((r) => r.transport_date === selectedDay && r.slot_number === slotNo && r.status !== 'cancelled' && matchesRequest(r))
           const summary = slots.find((r) => r.transport_date === selectedDay && r.slot_number === slotNo)
           const isBusy = !!request || !!summary || occupancy.some((x) => x.transport_date === selectedDay && x.slot_number === slotNo)
           const isOwn = request?.requester_id === profile.id
-          const canOpen = !!request && (canOperate || profile.role === 'utz' || (isCustomer && isOwn))
+          const canOpen = !!request && (!isCustomer || isOwn)
           const canEditRequest = !!request && (canOperate || (isCustomer && isOwn && request.status === 'created'))
           return <div key={slotNo} className={`selected-slot ${isBusy ? 'has-request' : 'empty-slot'}`}>
             <div className="selected-slot-number">{slotNo}</div>
@@ -734,7 +795,7 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
                 <small>БЕ отправления: {resolveUnit(units, request.from_unit_id, request.from_other_address)} · №{request.request_no} · {request.capacity_tons} т{!isCustomer ? ` · ${request.profiles?.username || 'Заказчик'}` : ''}</small>
               </div>
               <div className="selected-slot-actions"><StatusBadge status={request.status}/>
-                {canOpen && <button className="icon-button small" onClick={() => onOpen(request)} title={canEditRequest ? 'Редактировать заявку' : 'Просмотреть заявку'}>{canEditRequest ? <Pencil size={14}/> : <Eye size={14}/>}</button>}
+                {canOpen && <button className="icon-button small" onClick={() => onOpen(request)} title="Открыть заявку для просмотра"><Eye size={14}/></button>}
                 {isCustomer && isOwn && request.status === 'created' && <button className="icon-button small danger-icon" onClick={() => onCancel(request)} title="Отменить собственную заявку"><Ban size={14}/></button>}
               </div>
             </> : summary ? <>
@@ -744,12 +805,12 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
               <div className="selected-slot-info"><strong>Слот занят</strong><small>Сводные данные временно недоступны</small></div>
             </> : <>
               <div className="selected-slot-info"><strong>Свободный слот</strong><small>На эту дату нет активной заявки</small></div>
-              {canCreate && <button className="button button-outline button-compact" onClick={() => onCreate(slotNo, selectedDay)} title="Создать заявку в этом слоте"><Plus size={14}/> Заявка</button>}
+              {canCreate && selectedDay >= minCreateDate && <button className="button button-outline button-compact" onClick={() => onCreate(slotNo, selectedDay)} title="Создать заявку в этом слоте"><Plus size={14}/> Заявка</button>}
             </>}
           </div>
-        })}
+        }) : <div className="empty-filter-result"><Search size={17}/> По выбранным фильтрам на эту дату заявки не найдены.</div>}
       </div>
-      <div className="selected-day-tip"><CircleHelp size={15}/>{profile.role === 'customer' ? 'Вы видите статусы и БЕ отправления всех занятых слотов, а подробности — только собственных заявок. Создать можно в свободном слоте; отменить — пока статус «Создана».' : profile.role === 'admin' ? 'Администратор может создавать заявки от имени любого заказчика и редактировать все заявки.' : profile.role === 'dispatcher' ? 'Диспетчер может открывать и редактировать заявки, менять их статусы и просматривать историю.' : 'УТЗ доступен просмотр всех заявок и календаря, без изменения данных и статусов.'}</div>
+      <div className="selected-day-tip"><CircleHelp size={15}/>{profile.role === 'customer' ? `Вы видите статусы и БЕ отправления всех занятых слотов, подробности — только собственных заявок. Создание доступно с ${dateLabel(minCreateDate)}; отмена — пока статус «Создана».` : profile.role === 'admin' ? 'Администратор может создавать заявки от имени любого заказчика и редактировать все заявки.' : profile.role === 'dispatcher' ? 'Диспетчер может создавать и редактировать заявки, менять статусы и просматривать историю.' : 'УТЗ доступен просмотр всех заявок и календаря, без изменения данных и статусов.'}</div>
     </section>
   </div>
 }
@@ -762,8 +823,8 @@ function RequestsView({ requests, units, profile, search, setSearch, statusFilte
   const canChangeStatuses = profile.role === 'dispatcher' || profile.role === 'admin'
   const isCustomer = profile.role === 'customer'
   function exportCsv() {
-    const headers = ['Номер заявки', 'Дата', 'Слот', 'БЕ', 'Откуда', 'Куда', 'Заказчик', 'Грузоподъёмность, т', 'Погрузка', 'Груз', 'Грузомест оборудования, паллетомест', 'Реестр', 'Статус']
-    const rows = requests.map((r) => [r.request_no, r.transport_date, r.slot_number, r.business_units?.code || '', resolveUnit(units, r.from_unit_id, r.from_other_address), resolveUnit(units, r.to_unit_id, r.to_other_address), r.profiles?.username || '', r.capacity_tons, r.loading_type === 'rear' ? 'Задняя' : 'Боковая', (r.request_cargo || []).map((c) => cargoNames[c.cargo_type] || c.cargo_type).join('; '), r.request_cargo?.find((c) => c.cargo_type === 'equipment')?.equipment_pallet_places || '', r.registry_file_name || '', statusNames[r.status]])
+    const headers = ['Номер заявки', 'Номер задания на перевозку', 'Комментарий', 'Дата', 'Слот', 'БЕ', 'Откуда', 'Куда', 'Заказчик', 'Грузоподъёмность, т', 'Погрузка', 'Груз', 'Грузомест оборудования, паллетомест', 'Реестр', 'Статус']
+    const rows = requests.map((r) => [r.request_no, r.transport_task_number || '', r.request_comment || '', r.transport_date, r.slot_number, r.business_units?.code || '', resolveUnit(units, r.from_unit_id, r.from_other_address), resolveUnit(units, r.to_unit_id, r.to_other_address), r.profiles?.username || '', r.capacity_tons, r.loading_type === 'rear' ? 'Задняя' : 'Боковая', (r.request_cargo || []).map((c) => cargoNames[c.cargo_type] || c.cargo_type).join('; '), r.request_cargo?.find((c) => c.cargo_type === 'equipment')?.equipment_pallet_places || '', r.registry_file_name || '', statusNames[r.status]])
     const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
     const csv = '\uFEFF' + [headers, ...rows].map((row) => row.map(escape).join(';')).join('\r\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
@@ -781,10 +842,10 @@ function RequestsView({ requests, units, profile, search, setSearch, statusFilte
       <td><strong>{dateLabel(r.transport_date, { day: 'numeric', month: 'short' })}</strong><small>Слот {r.slot_number}</small></td>
       <td><div className="table-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)}</strong><ArrowRight size={13}/><strong>{resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong></div><small>{r.business_units?.code || 'БЕ'}</small></td>
       <td><strong>{r.profiles?.username || profile.username}</strong><small>{roleNames.customer}</small></td>
-      <td><strong>{r.capacity_tons} т</strong><small>{(r.request_cargo || []).map((c) => c.cargo_type === 'equipment' && c.equipment_pallet_places > 0 ? `${cargoNames[c.cargo_type]}: ${c.equipment_pallet_places} паллетомест` : cargoNames[c.cargo_type]).join(', ') || (r.loading_type === 'rear' ? 'Задняя' : 'Боковая')}</small></td>
+      <td><strong>{r.capacity_tons} т</strong><small>{(r.request_cargo || []).map((c) => c.cargo_type === 'equipment' && c.equipment_pallet_places > 0 ? `${cargoNames[c.cargo_type]}: ${c.equipment_pallet_places} паллетомест` : cargoNames[c.cargo_type]).join(', ') || (r.loading_type === 'rear' ? 'Задняя' : 'Боковая')}{r.transport_task_number ? ` · Задание ${r.transport_task_number}` : ''}</small>{r.request_comment && <small title={r.request_comment}>{r.request_comment}</small>}</td>
       <td>{canChangeStatuses ? <select className={`status-select ${statusClasses[r.status]}`} value={r.status} onChange={(e) => onStatus(r, e.target.value as RequestStatus)} title="Изменить статус заявки">{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select> : <StatusBadge status={r.status}/>}</td>
       <td><div className="row-actions">
-        <button className="icon-button small" onClick={() => onEdit(r)} title={canChangeStatuses ? 'Открыть и редактировать заявку' : isCustomer && r.status === 'created' ? 'Редактировать свою заявку' : 'Просмотреть заявку'}>{canChangeStatuses || (isCustomer && r.status === 'created') ? <Pencil size={14}/> : <Eye size={14}/>}</button>
+        <button className="icon-button small" onClick={() => onEdit(r)} title="Открыть заявку для просмотра и редактирования по правам роли"><Eye size={14}/></button>
         {(canChangeStatuses && r.status !== 'cancelled' || isCustomer && r.status === 'created') && <button className="icon-button small danger-icon" onClick={() => onCancel(r)} title="Отменить заявку"><Ban size={14}/></button>}
       </div></td>
     </tr>)}</tbody></table></div></section> : <section className="surface-card empty-large"><EmptyState icon={Search} title="Заявки не найдены" text="Измените параметры поиска или выберите другой статус."/></section>}
@@ -996,19 +1057,34 @@ function HistoryView({ rows, people, hasMore, loadingMore, onLoadMore, search, s
   </div>
 }
 
-function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, request, slot, initialDate, onClose, onSave, saving, registryTemplateName, registryTemplatePath, onDownloadTemplate, onDownloadRegistry }: { units: BusinessUnit[]; people: Profile[]; profile: Profile; occupancy: SlotOccupancy[]; bookingAdvanceDays: number; request?: TransportRequest; slot?: number; initialDate?: string; onClose: () => void; onSave: (payload: RequestDraft, request?: TransportRequest) => Promise<void>; saving: boolean; registryTemplateName: string | null; registryTemplatePath: string | null; onDownloadTemplate: () => void; onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void }) {
+function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, request, slot, initialDate, onClose, onSave, onUploadRegistry, saving, registryTemplateName, registryTemplatePath, onDownloadTemplate, onDownloadRegistry }: {
+  units: BusinessUnit[]; people: Profile[]; profile: Profile; occupancy: SlotOccupancy[]; bookingAdvanceDays: number; request?: TransportRequest; slot?: number; initialDate?: string;
+  onClose: () => void; onSave: (payload: RequestDraft, request?: TransportRequest) => Promise<void>;
+  onUploadRegistry: (request: TransportRequest, file: File) => Promise<{ path: string; name: string }>;
+  saving: boolean; registryTemplateName: string | null; registryTemplatePath: string | null; onDownloadTemplate: () => void;
+  onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void
+}) {
+  const isStaff = profile.role === 'dispatcher' || profile.role === 'admin'
+  const isOwnRequest = !!request && request.requester_id === profile.id
   const customerOptions = people.filter((person) => {
     const assignedBe = person.business_unit_id ? units.find((unit) => unit.id === person.business_unit_id && unit.kind === 'BE') : null
     const isCurrentRequester = person.id === request?.requester_id
     return person.role === 'customer' && (!person.business_unit_id || !!assignedBe && assignedBe.is_active || isCurrentRequester) && (person.is_active || isCurrentRequester)
   })
-  const initialRequesterId = request?.requester_id || (profile.role === 'admin' ? '' : profile.id)
-  const initialRequester = people.find((person) => person.id === initialRequesterId)
-  const minimumDate = iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + bookingAdvanceDays))
-  const [requesterId, setRequesterId] = useState(initialRequesterId)
+  const canEditFields = request
+    ? isStaff || (profile.role === 'customer' && isOwnRequest && request.status === 'created')
+    : profile.role === 'customer' || isStaff
+  const canEditRegistry = request
+    ? isStaff || (profile.role === 'customer' && isOwnRequest && !['completed', 'cancelled'].includes(request.status))
+    : profile.role === 'customer' || isStaff
+  const canChooseRequester = profile.role === 'admin' || (profile.role === 'dispatcher' && !request)
+  const [editing, setEditing] = useState(!request)
+  const [requesterId, setRequesterId] = useState(request?.requester_id || (profile.role === 'admin' || profile.role === 'dispatcher' ? '' : profile.id))
+  const initialRequester = people.find((person) => person.id === (request?.requester_id || profile.id))
+  const minimumDate = iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (isStaff ? 0 : bookingAdvanceDays)))
   const [date, setDate] = useState(request?.transport_date || (initialDate && initialDate >= minimumDate ? initialDate : minimumDate))
   const [slotNo, setSlotNo] = useState(request?.slot_number || slot || 1)
-  const [from, setFrom] = useState(request?.from_unit_id || (profile.role === 'admin' ? initialRequester?.default_from_id || initialRequester?.business_unit_id || '' : profile.default_from_id || profile.business_unit_id || ''))
+  const [from, setFrom] = useState(request?.from_unit_id || (initialRequester?.default_from_id || initialRequester?.business_unit_id || ''))
   const [fromOther, setFromOther] = useState(request?.from_other_address || '')
   const [to, setTo] = useState(request?.to_unit_id || '')
   const [toOther, setToOther] = useState(request?.to_other_address || '')
@@ -1019,21 +1095,43 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const [kdk, setKdk] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'goods')?.kdk_pallets || 0))
   const [packaging, setPackaging] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'packaging')?.packaging_qty || 0))
   const [equipmentPalletPlaces, setEquipmentPalletPlaces] = useState(String(request?.request_cargo?.find((x) => x.cargo_type === 'equipment')?.equipment_pallet_places || 0))
+  const [transportTaskNumber, setTransportTaskNumber] = useState(request?.transport_task_number || '')
+  const [requestComment, setRequestComment] = useState(request?.request_comment || '')
   const [formError, setFormError] = useState('')
   const [registryFile, setRegistryFile] = useState<File | null>(null)
+  const [currentRegistryPath, setCurrentRegistryPath] = useState(request?.registry_file_path || null)
+  const [currentRegistryName, setCurrentRegistryName] = useState(request?.registry_file_name || null)
+  const [registryUploading, setRegistryUploading] = useState(false)
+  const editableFields = editing && canEditFields
+  const registryCanUpload = editing && canEditRegistry
+  const registryOnlyMode = !!request && profile.role === 'customer' && request.status !== 'created'
   const be = units.filter((u) => u.kind === 'BE' && (u.is_active || u.id === request?.from_unit_id))
   const destinations = units.filter((u) => u.is_active || u.id === request?.to_unit_id)
   const occupied = occupancy.some((r) => r.transport_date === date && r.slot_number === slotNo && !(request?.transport_date === date && request.slot_number === slotNo))
-  const canEdit = request ? (profile.role === 'admin' || profile.role === 'dispatcher' || (profile.role === 'customer' && request.requester_id === profile.id && request.status === 'created')) : (profile.role === 'admin' || profile.role === 'customer')
+
   function toggleCargo(value: string) { setCargo((old) => old.includes(value) ? old.filter((x) => x !== value) : [...old, value]) }
+
+  async function uploadRegistryNow() {
+    if (!request || !registryFile) return
+    setRegistryUploading(true); setFormError('')
+    try {
+      const result = await onUploadRegistry(request, registryFile)
+      setCurrentRegistryPath(result.path); setCurrentRegistryName(result.name); setRegistryFile(null)
+    } catch (e) { setFormError(errorText(e)) }
+    finally { setRegistryUploading(false) }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault(); setFormError('')
     try {
-      if (!canEdit) throw new Error('У вас нет прав на изменение этой заявки.')
-      if (profile.role === 'admin' && !requesterId) throw new Error('Выберите заказчика.')
-      if ((!request || date !== request.transport_date) && date < minimumDate) throw new Error(`Дата перевозки должна быть не ранее ${dateLabel(minimumDate)}.`)
+      if (!editableFields) throw new Error('Для изменения полей заявки нажмите пиктограмму редактирования.')
+      if (canChooseRequester && !requesterId) throw new Error('Выберите заказчика.')
+      if (isStaff && date < iso(today)) throw new Error('Создавать и переносить заявки на прошедшую дату нельзя. Для сотрудников минимальная дата — сегодня.')
+      if (!isStaff && (!request || date !== request.transport_date) && date < minimumDate) throw new Error(`Дата перевозки должна быть не ранее ${dateLabel(minimumDate)}.`)
       if (!from || !to || (from === 'other' && !fromOther.trim()) || (to === 'other' && !toOther.trim())) throw new Error('Заполните маршрут перевозки.')
       if (!cargo.length) throw new Error('Выберите хотя бы один вид груза.')
+      if (transportTaskNumber.length > 44) throw new Error('Номер задания на перевозку не должен превышать 44 символа.')
+      if (requestComment.length > 320) throw new Error('Комментарий не должен превышать 320 символов.')
       if (registryFile) {
         const extension = registryFile.name.split('.').pop()?.toLowerCase() || ''
         if (!['xlsx', 'xls', 'csv', 'ods'].includes(extension)) throw new Error('Реестр должен быть в формате XLSX, XLS, CSV или ODS.')
@@ -1043,9 +1141,10 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
       if (cargo.includes('goods') && Number(stock) + Number(kdk) <= 0) throw new Error('Укажите количество паллет Сток и/или КДК.')
       if (cargo.includes('packaging') && Number(packaging) <= 0) throw new Error('Укажите количество тары.')
       if (cargo.includes('equipment') && (!Number.isInteger(Number(equipmentPalletPlaces)) || Number(equipmentPalletPlaces) <= 0)) throw new Error('Укажите количество грузомест оборудования в паллетоместах.')
-      await onSave({ requester_id: profile.role === 'admin' ? requesterId : undefined, transport_date: date, slot_number: slotNo, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0), equipment_pallet_places: Number(equipmentPalletPlaces || 0), registry_file: registryFile }, request)
+      await onSave({ requester_id: canChooseRequester ? requesterId : undefined, transport_date: date, slot_number: slotNo, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0), equipment_pallet_places: Number(equipmentPalletPlaces || 0), registry_file: registryFile, transport_task_number: transportTaskNumber, request_comment: requestComment }, request)
     } catch (e) { setFormError(errorText(e)) }
   }
+
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <form className="request-modal" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
@@ -1053,13 +1152,17 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
           <div>
             <span className="modal-eyebrow">ТРАНСПОРТНАЯ ЗАЯВКА</span>
             <h2>{request ? `Заявка №${request.request_no}` : 'Новая заявка'}</h2>
-            <p>{profile.role === 'admin' ? (people.find((person) => person.id === requesterId)?.username || profile.username) : profile.username} · {request ? 'Редактирование данных' : 'Заполните параметры перевозки'}</p>
+            <p>{request ? `${request.profiles?.username || profile.username} · ${statusNames[request.status]}` : (people.find((person) => person.id === requesterId)?.username || profile.username)} · {request ? (editing ? 'Редактирование данных' : 'Просмотр данных') : 'Заполните параметры перевозки'}</p>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Закрыть окно"><X size={18}/></button>
+          <div className="request-modal-heading-actions">
+            {request && (canEditFields || canEditRegistry) && <button type="button" className={`icon-button ${editing ? 'active' : ''}`} onClick={() => { setEditing((v) => !v); setFormError('') }} title={editing ? 'Перейти в режим просмотра' : 'Редактировать заявку'} aria-label={editing ? 'Перейти в режим просмотра' : 'Редактировать заявку'}><Pencil size={17}/></button>}
+            <button type="button" className="icon-button" onClick={onClose} aria-label="Закрыть окно" title="Закрыть окно"><X size={18}/></button>
+          </div>
         </div>
 
         <div className="modal-body request-modal-body">
-          {profile.role === 'admin' && <>
+          {request && <div className="request-view-status"><span>Текущий статус</span><StatusBadge status={request.status}/></div>}
+          {(profile.role === 'admin' || (profile.role === 'dispatcher' && !request)) && <>
             <div className="form-section-label">Заказчик заявки</div>
             <label className="modal-full-field">
               Пользователь
@@ -1068,98 +1171,67 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
                 setRequesterId(nextId)
                 const nextPerson = people.find((person) => person.id === nextId)
                 if (!request) setFrom(be.find((unit) => unit.id === nextPerson?.default_from_id)?.id || be.find((unit) => unit.id === nextPerson?.business_unit_id)?.id || '')
-              }} required disabled={!canEdit}>
+              }} required disabled={!editableFields}>
                 <option value="">Выберите заказчика</option>
                 {customerOptions.map((person) => <option key={person.id} value={person.id}>{person.username}{!person.is_active ? ' · отключён' : ''} — {units.find((unit) => unit.id === person.business_unit_id)?.code || 'БЕ не назначена'}</option>)}
               </select>
             </label>
           </>}
+          {request && profile.role === 'dispatcher' && <div className="request-view-meta"><span>Заказчик</span><strong>{request.profiles?.username || 'Не указан'}</strong></div>}
+          {request && <div className="request-view-meta"><span>БЕ профиля заказчика</span><strong>{request.business_units?.code ? `${request.business_units.code} — ${request.business_units.name}` : 'Не назначена'}</strong></div>}
 
           <div className="form-section-label">Дата и слот</div>
           <div className="form-grid-two request-field-grid">
-            <label className="request-field">
-              <span>Дата перевозки</span>
-              <input type="date" value={date} min={!request ? minimumDate : undefined} onChange={(e) => setDate(e.target.value)} required disabled={!canEdit} title="Дата, на которую требуется транспорт. Дата ограничена настройкой предварительной записи."/>
-              <small className="field-hint">Минимальный срок подачи: {bookingAdvanceDays} дн.</small>
-            </label>
-            <label className="request-field">
-              <span>Транспортный слот</span>
-              <select value={slotNo} onChange={(e) => setSlotNo(Number(e.target.value))} disabled={!canEdit} title="Один из трёх общих слотов на выбранную дату.">
-                {[1, 2, 3].map((n) => <option value={n} key={n}>Слот {n}</option>)}
-              </select>
-            </label>
+            <label className="request-field"><span>Дата перевозки</span><input type="date" value={date} min={editableFields ? minimumDate : undefined} onChange={(e) => setDate(e.target.value)} required disabled={!editableFields} title={isStaff ? 'Диспетчер и администратор могут назначить текущую или будущую дату.' : 'Дата ограничена настройкой срока предварительной записи.'}/><small className="field-hint">{isStaff ? 'Для сотрудников: сегодня или позже.' : `Минимальный срок подачи: ${bookingAdvanceDays} дн.`}</small></label>
+            <label className="request-field"><span>Транспортный слот</span><select value={slotNo} onChange={(e) => setSlotNo(Number(e.target.value))} disabled={!editableFields} title="Один из трёх общих слотов на выбранную дату.">{[1, 2, 3].map((n) => <option value={n} key={n}>Слот {n}</option>)}</select></label>
           </div>
 
           <div className="form-section-label">Маршрут</div>
           <div className="form-grid-two request-field-grid">
-            <div className="request-field-group">
-              <label htmlFor="request-from">Откуда</label>
-              <select id="request-from" value={from} onChange={(e) => setFrom(e.target.value)} required disabled={!canEdit} title="Бизнес-единица или адрес, откуда нужно забрать груз.">
-                <option value="">Выберите БЕ</option>
-                {be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}
-                <option value="other">Другой адрес</option>
-              </select>
-              {from === 'other' && <label className="request-subfield">Адрес отправления<input value={fromOther} onChange={(e) => setFromOther(e.target.value)} required disabled={!canEdit}/></label>}
-            </div>
-            <div className="request-field-group">
-              <label htmlFor="request-to">Куда</label>
-              <select id="request-to" value={to} onChange={(e) => setTo(e.target.value)} required disabled={!canEdit} title="Бизнес-единица, РЦ или адрес назначения.">
-                <option value="">Выберите БЕ или РЦ</option>
-                {destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}
-                <option value="other">Другой адрес</option>
-              </select>
-              {to === 'other' && <label className="request-subfield">Адрес назначения<input value={toOther} onChange={(e) => setToOther(e.target.value)} required disabled={!canEdit}/></label>}
-            </div>
+            <div className="request-field-group"><label htmlFor="request-from">Откуда</label><select id="request-from" value={from} onChange={(e) => setFrom(e.target.value)} required disabled={!editableFields} title="Бизнес-единица или адрес, откуда нужно забрать груз."><option value="">Выберите БЕ</option>{be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select>{from === 'other' && <label className="request-subfield">Адрес отправления<input value={fromOther} onChange={(e) => setFromOther(e.target.value)} required disabled={!editableFields}/></label>}</div>
+            <div className="request-field-group"><label htmlFor="request-to">Куда</label><select id="request-to" value={to} onChange={(e) => setTo(e.target.value)} required disabled={!editableFields} title="Бизнес-единица, РЦ или адрес назначения."><option value="">Выберите БЕ или РЦ</option>{destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select>{to === 'other' && <label className="request-subfield">Адрес назначения<input value={toOther} onChange={(e) => setToOther(e.target.value)} required disabled={!editableFields}/></label>}</div>
           </div>
 
           <div className="form-section-label">Параметры транспорта</div>
           <div className="form-grid-two request-field-grid">
-            <div className="field-block request-option-field">
-              <span>Грузоподъёмность</span>
-              <div className="segmented-options">
-                {['1.5', '5', '10', '20'].map((value) => <button type="button" key={value} className={capacity === value ? 'selected' : ''} onClick={() => setCapacity(value)} disabled={!canEdit}>{value.replace('.', ',')} т</button>)}
-              </div>
-            </div>
-            <div className="field-block request-option-field">
-              <span>Тип погрузки</span>
-              <div className="segmented-options">
-                {(['rear', 'side'] as const).map((value) => <button type="button" key={value} className={loadingType === value ? 'selected' : ''} onClick={() => setLoadingType(value)} disabled={!canEdit}>{value === 'rear' ? 'Задняя' : 'Боковая'}</button>)}
-              </div>
-            </div>
+            <div className="field-block request-option-field"><span>Грузоподъёмность</span><div className="segmented-options">{['1.5', '5', '10', '20'].map((value) => <button type="button" key={value} className={capacity === value ? 'selected' : ''} onClick={() => setCapacity(value)} disabled={!editableFields}>{value.replace('.', ',')} т</button>)}</div></div>
+            <div className="field-block request-option-field"><span>Тип погрузки</span><div className="segmented-options">{(['rear', 'side'] as const).map((value) => <button type="button" key={value} className={loadingType === value ? 'selected' : ''} onClick={() => setLoadingType(value)} disabled={!editableFields}>{value === 'rear' ? 'Задняя' : 'Боковая'}</button>)}</div></div>
           </div>
 
           <div className="form-section-label">Состав груза</div>
-          <div className="cargo-tiles request-cargo-tiles" title="Отметьте все типы груза, которые входят в заявку.">
-            {([['goods', 'Товар', Package], ['equipment', 'Оборудование', Warehouse], ['packaging', 'Тара', Layers3]] as const).map(([value, label, Icon]) => <button type="button" key={value} className={cargo.includes(value) ? 'cargo-tile active' : 'cargo-tile'} onClick={() => toggleCargo(value)} disabled={!canEdit}><Icon size={23}/><strong>{label}</strong><span>{cargo.includes(value) ? 'Выбрано' : 'Добавить'}</span></button>)}
-          </div>
-
+          <div className="cargo-tiles request-cargo-tiles" title="Отметьте все типы груза, которые входят в заявку.">{([['goods', 'Товар', Package], ['equipment', 'Оборудование', Warehouse], ['packaging', 'Тара', Layers3]] as const).map(([value, label, Icon]) => <button type="button" key={value} className={cargo.includes(value) ? 'cargo-tile active' : 'cargo-tile'} onClick={() => toggleCargo(value)} disabled={!editableFields}><Icon size={23}/><strong>{label}</strong><span>{cargo.includes(value) ? 'Выбрано' : 'Добавить'}</span></button>)}</div>
           {(cargo.includes('goods') || cargo.includes('packaging') || cargo.includes('equipment')) && <div className="form-grid-two request-field-grid cargo-quantities request-quantity-grid">
-            {cargo.includes('goods') && <>
-              <label className="request-field request-quantity-field" title="Количество паллетомест товарного запаса Сток."><span>Сток, паллетомест</span><input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} disabled={!canEdit}/></label>
-              <label className="request-field request-quantity-field" title="Количество паллетомест категории Кросс док."><span>Кросс док, паллетомест</span><input type="number" min="0" value={kdk} onChange={(e) => setKdk(e.target.value)} disabled={!canEdit}/></label>
-            </>}
-            {cargo.includes('packaging') && <label className="request-field request-quantity-field" title="Количество единиц тары в штуках."><span>Тара, шт.</span><input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!canEdit}/></label>}
-            {cargo.includes('equipment') && <label className="request-field request-quantity-field" title="Количество грузомест оборудования в паллетоместах."><span>Оборудование, паллетомест</span><input type="number" min="1" step="1" value={equipmentPalletPlaces} onChange={(e) => setEquipmentPalletPlaces(e.target.value)} placeholder="Например, 4" required disabled={!canEdit}/></label>}
+            {cargo.includes('goods') && <><label className="request-field request-quantity-field" title="Количество паллетомест товарного запаса Сток."><span>Сток, паллетомест</span><input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} disabled={!editableFields}/></label><label className="request-field request-quantity-field" title="Количество паллетомест категории Кросс док."><span>Кросс док, паллетомест</span><input type="number" min="0" value={kdk} onChange={(e) => setKdk(e.target.value)} disabled={!editableFields}/></label></>}
+            {cargo.includes('packaging') && <label className="request-field request-quantity-field" title="Количество единиц тары в штуках."><span>Тара, шт.</span><input type="number" min="1" value={packaging} onChange={(e) => setPackaging(e.target.value)} disabled={!editableFields}/></label>}
+            {cargo.includes('equipment') && <label className="request-field request-quantity-field" title="Количество грузомест оборудования в паллетоместах."><span>Оборудование, паллетомест</span><input type="number" min="1" step="1" value={equipmentPalletPlaces} onChange={(e) => setEquipmentPalletPlaces(e.target.value)} placeholder="Например, 4" required disabled={!editableFields}/></label>}
           </div>}
+
+          {request?.dispatcher_comment && <div className="request-view-meta"><span>Комментарий диспетчера</span><strong>{request.dispatcher_comment}</strong></div>}
+          <div className="form-section-label">Дополнительные сведения <small className="optional-label">необязательно</small></div>
+          <div className="form-grid-two request-field-grid">
+            <label className="request-field"><span>Номер задания на перевозку</span><input value={transportTaskNumber} onChange={(e) => setTransportTaskNumber(e.target.value.slice(0, 44))} maxLength={44} placeholder="До 44 символов" disabled={!editableFields}/><small className="field-hint">{transportTaskNumber.length}/44 символа</small></label>
+            <label className="request-field"><span>Комментарий</span><textarea value={requestComment} onChange={(e) => setRequestComment(e.target.value.slice(0, 320))} maxLength={320} rows={2} placeholder="До 320 символов" disabled={!editableFields}/><small className="field-hint">{requestComment.length}/320 символов</small></label>
+          </div>
 
           <div className="form-section-label">Реестр к заявке <small className="optional-label">необязательно</small></div>
           <div className="registry-attachment-panel">
             <div className="registry-attachment-actions">
-              {canEdit && <label className="button button-secondary registry-file-picker"><Upload size={15}/>{registryFile ? 'Заменить реестр' : request?.registry_file_name ? 'Заменить реестр' : 'Добавить реестр'}<input type="file" accept=".xlsx,.xls,.csv,.ods" onChange={(e) => { setRegistryFile(e.target.files?.[0] || null); e.currentTarget.value = '' }} hidden/></label>}
+              {registryCanUpload && <label className="button button-secondary registry-file-picker"><Upload size={15}/>{registryFile || currentRegistryName ? 'Заменить реестр' : 'Добавить реестр'}<input type="file" accept=".xlsx,.xls,.csv,.ods" onChange={(e) => { setRegistryFile(e.target.files?.[0] || null); e.currentTarget.value = '' }} hidden/></label>}
               <button type="button" className="button button-secondary" onClick={onDownloadTemplate} disabled={!registryTemplatePath} title={registryTemplatePath ? `Скачать шаблон ${registryTemplateName || ''}` : 'Администратор ещё не загрузил шаблон'}><Download size={15}/> Скачать шаблон</button>
             </div>
-            {registryFile ? <div className="registry-file-status"><FileText size={16}/><span>Выбран файл: <strong>{registryFile.name}</strong><small>{(registryFile.size / 1024 / 1024).toFixed(2)} МБ · файл будет приложен после сохранения заявки</small></span><button type="button" className="icon-button small" onClick={() => setRegistryFile(null)} title="Отменить выбор файла"><X size={14}/></button></div>
-              : request?.registry_file_path ? <div className="registry-file-status"><FileText size={16}/><span>Прикреплён реестр: <strong>{request.registry_file_name || 'Файл реестра'}</strong><small>Файл сохранён в карточке заявки</small></span><button type="button" className="button button-secondary button-compact" onClick={() => onDownloadRegistry(request.registry_file_path, request.registry_file_name)}><Download size={14}/> Скачать</button></div>
-              : <p className="registry-file-hint">Реестр прикладывается по желанию. Форматы: XLSX, XLS, CSV, ODS. Максимальный размер — 20 МБ.</p>}
+            {registryFile && <div className="registry-file-status"><FileText size={16}/><span>Выбран файл: <strong>{registryFile.name}</strong><small>{(registryFile.size / 1024 / 1024).toFixed(2)} МБ</small></span>{request && registryOnlyMode ? <button type="button" className="button button-primary button-compact" onClick={uploadRegistryNow} disabled={registryUploading}>{registryUploading ? 'Загружаем…' : 'Загрузить реестр'}</button> : <button type="button" className="icon-button small" onClick={() => setRegistryFile(null)} title="Отменить выбор файла"><X size={14}/></button>}</div>}
+            {!registryFile && currentRegistryPath && <div className="registry-file-status"><FileText size={16}/><span>Прикреплён реестр: <strong>{currentRegistryName || 'Файл реестра'}</strong><small>Файл сохранён в карточке заявки</small></span><button type="button" className="button button-secondary button-compact" onClick={() => onDownloadRegistry(currentRegistryPath, currentRegistryName)}><Download size={14}/> Скачать</button></div>}
+            {!registryFile && !currentRegistryPath && <p className="registry-file-hint">Реестр прикладывается по желанию. Форматы: XLSX, XLS, CSV, ODS. Максимальный размер — 20 МБ.</p>}
+            {registryOnlyMode && canEditRegistry && <small className="field-hint">Заказчик может загрузить или заменить реестр до статуса «Выполнена» или «Отменена».</small>}
           </div>
 
-          {occupied && <div className="message message-error"><AlertCircle size={16}/> Этот слот уже занят другой заявкой.</div>}
+          {occupied && editableFields && <div className="message message-error"><AlertCircle size={16}/> Этот слот уже занят другой заявкой.</div>}
           {formError && <div className="message message-error"><AlertCircle size={16}/>{formError}</div>}
         </div>
 
         <div className="modal-actions">
           <button type="button" className="button button-secondary" onClick={onClose}>Закрыть</button>
-          {canEdit && <button className="button button-primary" disabled={saving || !!occupied}>{saving ? 'Сохранение…' : 'Сохранить заявку'} <ArrowRight size={16}/></button>}
+          {editableFields && <button className="button button-primary" disabled={saving || !!occupied}>{saving ? 'Сохранение…' : 'Сохранить заявку'} <ArrowRight size={16}/></button>}
         </div>
       </form>
     </div>

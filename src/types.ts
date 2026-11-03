@@ -42,6 +42,8 @@ export interface TransportRequest {
   loading_type: 'rear' | 'side'
   status: RequestStatus
   dispatcher_comment: string | null
+  transport_task_number?: string | null
+  request_comment?: string | null
   profiles?: { username: string } | null
   business_units?: { code: string; name: string } | null
   request_cargo?: CargoLine[]
