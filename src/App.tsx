@@ -623,8 +623,8 @@ function App() {
         {error && <div className="message message-error"><AlertCircle size={17} /><span>{error}</span><button onClick={() => setError('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {notice && <div className="message message-success"><CheckCircle2 size={17} /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {view === 'overview' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} />}
-        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} />}
-        {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} />}
+        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
+        {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
         {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
         {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
         {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} templateName={registryTemplateName} templateUploading={templateUploading} onTemplateUpload={uploadRegistryTemplate} onDownloadTemplate={downloadRegistryTemplate} />}
@@ -680,10 +680,11 @@ function OverviewView({ profile, requests, occupancy, units, onNavigate, onReque
   </div>
 }
 
-function CalendarView({ month, days, requests, allRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, minCreateDate, onCreate, onOpen, onCancel }: {
+function CalendarView({ month, days, requests, allRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, minCreateDate, onCreate, onOpen, onCancel, onDownloadRegistry }: {
   month: Date; days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; slots: CalendarSlot[]; occupancy: SlotOccupancy[];
   selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[]; minCreateDate: string;
-  onCreate: (slot: number, date: string) => void; onOpen: (request: TransportRequest) => void; onCancel: (request: TransportRequest) => void
+  onCreate: (slot: number, date: string) => void; onOpen: (request: TransportRequest) => void; onCancel: (request: TransportRequest) => void;
+  onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void
 }) {
   const [query, setQuery] = useState('')
   const [cargoFilter, setCargoFilter] = useState('all')
@@ -799,6 +800,7 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
               </div>
               <div className="selected-slot-actions"><StatusBadge status={request.status}/>
                 {canOpen && <button className="icon-button small" onClick={() => onOpen(request)} title="Открыть заявку для просмотра"><Eye size={14}/></button>}
+                {request.registry_file_path && (!isCustomer || isOwn) && <button className="icon-button small" onClick={() => onDownloadRegistry(request.registry_file_path, request.registry_file_name)} title={`Скачать реестр: ${request.registry_file_name || 'вложение'}`}><Download size={14}/></button>}
                 {isCustomer && isOwn && request.status === 'created' && <button className="icon-button small danger-icon" onClick={() => onCancel(request)} title="Отменить собственную заявку"><Ban size={14}/></button>}
               </div>
             </> : summary ? <>
@@ -818,10 +820,11 @@ function CalendarView({ month, days, requests, allRequests, slots, occupancy, se
   </div>
 }
 
-function RequestsView({ requests, units, profile, search, setSearch, statusFilter, setStatusFilter, onStatus, onEdit, onCancel }: {
+function RequestsView({ requests, units, profile, search, setSearch, statusFilter, setStatusFilter, onStatus, onEdit, onCancel, onDownloadRegistry }: {
   requests: TransportRequest[]; units: BusinessUnit[]; profile: Profile; search: string; setSearch: (v: string) => void;
   statusFilter: 'all' | RequestStatus; setStatusFilter: (v: 'all' | RequestStatus) => void;
-  onStatus: (r: TransportRequest, s: RequestStatus) => void; onEdit: (r: TransportRequest) => void; onCancel: (r: TransportRequest) => void
+  onStatus: (r: TransportRequest, s: RequestStatus) => void; onEdit: (r: TransportRequest) => void; onCancel: (r: TransportRequest) => void;
+  onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void
 }) {
   const canChangeStatuses = profile.role === 'dispatcher' || profile.role === 'admin'
   const isCustomer = profile.role === 'customer'
@@ -849,6 +852,7 @@ function RequestsView({ requests, units, profile, search, setSearch, statusFilte
       <td>{canChangeStatuses ? <select className={`status-select ${statusClasses[r.status]}`} value={r.status} onChange={(e) => onStatus(r, e.target.value as RequestStatus)} title="Изменить статус заявки">{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select> : <StatusBadge status={r.status}/>}</td>
       <td><div className="row-actions">
         <button className="icon-button small" onClick={() => onEdit(r)} title="Открыть заявку для просмотра и редактирования по правам роли"><Eye size={14}/></button>
+        {r.registry_file_path && <button className="icon-button small" onClick={() => onDownloadRegistry(r.registry_file_path, r.registry_file_name)} title={`Скачать реестр: ${r.registry_file_name || 'вложение'}`}><Download size={14}/></button>}
         {(canChangeStatuses && r.status !== 'cancelled' || isCustomer && r.status === 'created') && <button className="icon-button small danger-icon" onClick={() => onCancel(r)} title="Отменить заявку"><Ban size={14}/></button>}
       </div></td>
     </tr>)}</tbody></table></div></section> : <section className="surface-card empty-large"><EmptyState icon={Search} title="Заявки не найдены" text="Измените параметры поиска или выберите другой статус."/></section>}
