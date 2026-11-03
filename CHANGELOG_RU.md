@@ -124,3 +124,8 @@
 ### Миграция
 
 Для обновления с версии 0.4.3 выполните миграции `0007_request_details_staff_booking_customer_registry.sql` и `0008_realtime_request_refresh.sql` после ранее применённых миграций.
+
+
+## v0.4.5 — TypeScript build hotfix
+- Исправлено сужение nullable Supabase client внутри cleanup-функции Realtime useEffect (TS18047).
+- Сборка по-прежнему запускает `tsc -b && vite build`; проверка типов не отключена.

@@ -145,7 +145,10 @@ function App() {
   // The message carries no request data; each role reloads through its own RLS scope.
   useEffect(() => {
     if (!profile || !supabase) return
-    const channel = supabase
+    // Capture the non-null client in this effect scope. TypeScript does not
+    // preserve narrowing of the imported nullable binding inside cleanup.
+    const client = supabase
+    const channel = client
       .channel('transport-calendar', { config: { private: true } })
       .on('broadcast', { event: 'transport-request-updated' }, () => {
         if (realtimeRefreshTimer.current !== null) window.clearTimeout(realtimeRefreshTimer.current)
@@ -158,7 +161,7 @@ function App() {
     return () => {
       if (realtimeRefreshTimer.current !== null) window.clearTimeout(realtimeRefreshTimer.current)
       realtimeRefreshTimer.current = null
-      void supabase.removeChannel(channel)
+      void client.removeChannel(channel)
     }
   }, [profile?.id, month.getTime()])
   useEffect(() => {
