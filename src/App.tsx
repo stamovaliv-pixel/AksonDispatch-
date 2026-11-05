@@ -967,13 +967,14 @@ function CalendarView({ days, requests, allRequests, searchRequests, slots, occu
     const mainSet = new Set<number>()
     const reserveSet = new Set<number>()
     rowsForCapacity.forEach((row) => (row.slot_type === 'main' ? mainSet : reserveSet).add(row.slot_number))
-    // With filters, the red badge counts only matching requests, exactly like
-    // DockSlot's filtered booking counter. Without filters, show all day records.
+    // The blue day stripe and red badge indicate actual requests, not merely
+    // occupied capacity rows. Customers see only their own requests; staff see
+    // all requests (or only matching requests while filters are active).
     const total = filtersActive
       ? matchingRows.length
       : isCustomer
         ? customerDayRequestRows.length
-        : Math.max(allDayRequestRows.length, mainSet.size + reserveSet.size)
+        : allDayRequestRows.length
     return { main: mainSet.size, reserve: reserveSet.size, total, freeMain: Math.max(0, 3 - mainSet.size), freeReserve: Math.max(0, reserveSlotLimit - reserveSet.size) }
   }
   const toggleExportDate = (date: string) => setSelectedExportDates((old) => old.includes(date) ? old.filter((d) => d !== date) : [...old, date])
