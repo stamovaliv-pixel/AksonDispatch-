@@ -5,12 +5,12 @@ import {
   CircleHelp, FileSpreadsheet, Filter, LayoutDashboard, LogOut, Menu, Moon,
   Package, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sun, Truck, Users,
   Warehouse, X, Pencil, Ban, Eye, Layers3, History as HistoryIcon, Save,
-  SlidersHorizontal, Clock3, Upload, Download, FileText, MapPin, CalendarClock, Copy
+  SlidersHorizontal, Clock3, Upload, Download, FileText, MapPin, CalendarClock, Copy, BookOpen
 } from 'lucide-react'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRequest } from './types'
 
-type View = 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'directory' | 'settings' | 'history'
+type View = 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'directory' | 'settings' | 'history' | 'instructions'
 type RequestListFilter = 'all' | 'active' | RequestStatus
 type RequestDraft = {
   transport_date: string; slot_number: number; slot_type: 'main' | 'reserve'; from_unit_id: string | null; from_other_address: string | null;
@@ -154,10 +154,10 @@ function App() {
         let savedView: View | null = null
         try { savedView = sessionStorage.getItem('akson-transport-active-view') as View | null } catch { /* storage may be disabled */ }
         const allowedViews: Record<Role, View[]> = {
-          customer: ['calendar', 'requests'],
-          utz: ['calendar', 'requests'],
-          dispatcher: ['overview', 'calendar', 'requests', 'reports', 'history'],
-          admin: ['overview', 'calendar', 'requests', 'reports', 'users', 'directory', 'settings', 'history']
+          customer: ['calendar', 'requests', 'instructions'],
+          utz: ['calendar', 'requests', 'instructions'],
+          dispatcher: ['overview', 'calendar', 'requests', 'reports', 'history', 'instructions'],
+          admin: ['overview', 'calendar', 'requests', 'reports', 'users', 'directory', 'settings', 'history', 'instructions']
         }
         const defaultView: View = data.role === 'customer' || data.role === 'utz' ? 'calendar' : 'overview'
         setView(savedView && allowedViews[data.role as Role]?.includes(savedView) ? savedView : defaultView)
@@ -732,7 +732,7 @@ function App() {
   const ownRequests = requests.filter((r) => profile?.role !== 'customer' || r.requester_id === profile?.id)
   const selectedRequests = ownRequests.filter((r) => r.transport_date === selectedDay)
   const isAdmin = profile?.role === 'admin'
-  const pageTitles: Record<View, string> = { overview: 'Обзор', calendar: 'Календарь', requests: 'Заявки на транспорт', reports: 'Отчёты', users: 'Пользователи', directory: 'Справочник БЕ и РЦ', settings: 'Настройки', history: 'История изменений' }
+  const pageTitles: Record<View, string> = { overview: 'Обзор', calendar: 'Календарь', requests: 'Заявки на транспорт', reports: 'Отчёты', users: 'Пользователи', directory: 'Справочник БЕ и РЦ', settings: 'Настройки', history: 'История изменений', instructions: 'Инструкция' }
 
   if (!supabaseConfigured) return <SetupScreen />
   if (!session || !profile) return <LoginScreen login={login} password={password} setLogin={setLogin} setPassword={setPassword} signIn={signIn} busy={loginBusy} error={error} />
@@ -747,7 +747,8 @@ function App() {
     { key: 'users', label: 'Пользователи', icon: Users, admin: true },
     { key: 'directory', label: 'Справочник', icon: Building2, admin: true },
     { key: 'settings', label: 'Настройки', icon: SlidersHorizontal, admin: true },
-    { key: 'history', label: 'История', icon: HistoryIcon, staff: true }
+    { key: 'history', label: 'История', icon: HistoryIcon, staff: true },
+    { key: 'instructions', label: 'Инструкция', icon: BookOpen }
   ]
 
   return <div className="app-shell">
@@ -778,6 +779,7 @@ function App() {
         {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
         {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} reserveSlotLimit={reserveSlotLimit} setReserveSlotLimit={setReserveSlotLimit} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} templateName={registryTemplateName} templateUploading={templateUploading} onTemplateUpload={uploadRegistryTemplate} onDownloadTemplate={downloadRegistryTemplate} />}
         {view === 'reports' && canViewStaffPages && <ReportsView rows={reportRows} from={reportsFrom} setFrom={setReportsFrom} to={reportsTo} setTo={setReportsTo} loading={reportsLoading} onGenerate={loadReports} />}
+        {view === 'instructions' && <InstructionsView role={profile.role} />}
         {view === 'history' && canViewStaffPages && <HistoryView rows={auditRows} people={people} hasMore={historyHasMore} loadingMore={historyLoadingMore} onLoadMore={() => loadHistory(true)} search={historySearch} setSearch={setHistorySearch} entity={historyEntity} setEntity={setHistoryEntity} from={historyFrom} setFrom={setHistoryFrom} to={historyTo} setTo={setHistoryTo} onRefresh={loadHistory} />}
         <footer className="app-footer"><span>АКСОН ЛОГИСТИКА</span><span>Портал заказа транспорта · {new Date().getFullYear()}</span></footer>
       </main>
@@ -785,6 +787,70 @@ function App() {
     {editingPerson && <UserEditModal person={editingPerson} units={units} draft={userEditDraft} setDraft={setUserEditDraft} onSubmit={saveUserEdit} onClose={() => setEditingPerson(null)} saving={saving} currentUserId={profile.id} />}
     {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} onUploadRegistry={uploadRequestRegistry} saving={saving} registryTemplateName={registryTemplateName} registryTemplatePath={registryTemplatePath} reserveSlotLimit={Number(reserveSlotLimit) || 0} onDownloadTemplate={downloadRegistryTemplate} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
     {loading && <div className="loading-pill"><span className="spinner" /> Обновляем данные…</div>}
+  </div>
+}
+
+const instructionContent: Record<Role, { title: string; intro: string; sections: { heading: string; points: string[] }[] }> = {
+  customer: {
+    title: 'Инструкция заказчика',
+    intro: 'Создание и контроль собственных транспортных заявок.',
+    sections: [
+      { heading: 'Создание заявки', points: ['Откройте «Календарь», выберите нужную дату и нажмите на ячейку дня. Если заявок ещё нет, используйте действие создания заявки.', 'Заполните обязательные поля «Откуда» и «Куда»: выберите подразделение из списка либо выберите «Другой адрес» и укажите адрес вручную.', 'Если выбрано подразделение, его адрес подставляется автоматически. Проверьте дату, тип и параметры груза, номер задания и комментарий.', 'При необходимости прикрепите реестр в формате XLSX, XLS, CSV или ODS (до 20 МБ), затем сохраните заявку.'] },
+      { heading: 'Основные и резервные слоты', points: ['Направление в РЦ из справочника использует основной слот (синий индикатор).', 'Другой адрес использует резервный слот (зелёный индикатор).', 'Лимиты основных и резервных слотов независимы. Смотрите свободные места соответствующего типа в календаре.'] },
+      { heading: 'Просмотр и редактирование', points: ['В календаре и на странице «Заявки» отображаются только ваши заявки.', 'Откройте заявку, чтобы посмотреть маршрут, адреса, дату, параметры груза, статус и вложения.', 'Собственную заявку можно редактировать в разрешённых статусах. Возможность изменения отдельных полей определяется статусом заявки.', 'Реестр можно загрузить или заменить, если это разрешено текущим статусом. Для скачивания используйте кнопку текущего реестра, а не кнопку шаблона.'] },
+      { heading: 'Поиск и статусы', points: ['Используйте фильтры календаря и списка заявок для поиска по дате, отправителю, получателю и другим доступным параметрам.', 'Статусы показывают ход обработки: «Создана», «Поиск транспорта», «Подтверждена», «Выполнена» или «Отменена».', 'Отменённые заявки по умолчанию скрыты в общем списке. Если доступен переключатель отображения отменённых, включите его для просмотра.'] },
+      { heading: 'Выгрузка и помощь', points: ['В календаре включите инструменты выгрузки, отметьте даты и используйте доступную выгрузку собственных заявок или реестров.', 'Если реестр не отображается или не скачивается, проверьте, что загрузка завершилась, и обратитесь к диспетчеру или администратору.'] }
+    ]
+  },
+  dispatcher: {
+    title: 'Инструкция диспетчера',
+    intro: 'Операционная обработка заявок и контроль транспортного потока.',
+    sections: [
+      { heading: 'Обзор и ежедневная работа', points: ['На странице «Обзор» контролируйте статистику: всего заявок, создано, в работе, выполнено и отменено. Карточки показателей открывают соответствующие списки заявок.', 'В блоке «Ближайшие заявки» нажмите на запись, чтобы открыть её карточку.', 'Начинайте обработку с новых заявок, проверяйте маршрут, дату, параметры груза и вложенный реестр.'] },
+      { heading: 'Календарь и слоты', points: ['Календарь показывает транспортную загрузку по датам. При выборе дня справа отображаются заявки этого дня.', 'Используйте фильтры «Заказчик», «Откуда», «Куда», тип груза и грузоподъёмность. При активном поиске справа показываются ближайшие найденные активные заявки в пределах трёх отчётных месяцев.', 'Основной слот применяется для назначения в РЦ из справочника (синий индикатор), резервный — для другого адреса (зелёный индикатор). Пулы независимы.'] },
+      { heading: 'Работа с заявками', points: ['На странице «Заявки» новые записи располагаются выше старых. Используйте фильтры по заказчику, отправлению, назначению и статусу.', 'Диспетчер может создавать и редактировать заявки в пределах своих прав, в том числе оформлять заявку от имени заказчика.', 'Проверяйте обязательные адреса, дату, тип груза, грузовые параметры, номер задания, комментарии и реестр.', 'Изменяйте статус в соответствии с фактическим этапом перевозки. Отменённые заявки скрыты по умолчанию; включите пиктограмму отображения отменённых для их просмотра.'] },
+      { heading: 'Реестры и выгрузки', points: ['В карточке заявки скачивайте именно текущий вложенный реестр. Шаблон реестра — отдельный файл, предназначенный для заполнения.', 'Для массовой выгрузки включите инструменты выгрузки в календаре, отметьте нужные даты и выберите объединённую выгрузку реестров или CSV со сведениями по заявкам.', 'Диспетчер имеет доступ к реестрам заявок в пределах своих полномочий.'] },
+      { heading: 'История и отчёты', points: ['Используйте «Историю» для контроля действий пользователей и изменений. Применяйте фильтры по пользователю и периоду.', 'В «Отчётах» анализируйте заявки, направления, типы груза и скорость закрытия за выбранный период.'] }
+    ]
+  },
+  utz: {
+    title: 'Инструкция УТЗ',
+    intro: 'Контроль транспортных заявок, загрузки и получение информации о перевозках.',
+    sections: [
+      { heading: 'Рабочие страницы', points: ['После входа откроется «Календарь». УТЗ также доступен список «Заявки».', 'УТЗ видит заявки всех заказчиков в пределах назначенных прав, но не имеет стандартных прав на редактирование заявок и изменение статусов.', 'Страница «Обзор» и административные разделы УТЗ не показываются.'] },
+      { heading: 'Календарь и фильтры', points: ['Выберите дату, чтобы увидеть заявки этого дня справа от календаря.', 'Используйте фильтры по заказчику, отправлению, назначению, типу груза и грузоподъёмности.', 'При активном поиске календарные индикаторы пересчитываются по найденным заявкам, а справа показываются ближайшие найденные активные заявки в пределах трёх отчётных месяцев.', 'Основные слоты относятся к направлениям в РЦ (синий индикатор), резервные — к другим адресам (зелёный индикатор). Их лимиты не пересекаются.'] },
+      { heading: 'Просмотр заявок', points: ['Откройте заявку из календаря или списка, чтобы проверить маршрут, адреса, дату, груз, статус и комментарии.', 'Список заявок отсортирован по номеру от большего к меньшему. Отменённые заявки по умолчанию скрыты; при наличии переключателя включите его для просмотра.', 'Проверяйте, что выбран правильный пункт назначения: он определяет тип слота.'] },
+      { heading: 'Реестры и выгрузки', points: ['В карточке заявки скачивайте текущий вложенный реестр, а не шаблон реестра.', 'Для массового получения файлов включите инструменты выгрузки в календаре, выберите даты и запустите выгрузку вложенных реестров.', 'Для получения сведений по заявкам используйте CSV-выгрузку по выбранным датам.'] }
+    ]
+  },
+  admin: {
+    title: 'Полное руководство администратора',
+    intro: 'Администратор видит инструкции всех ролей и управляет настройками и доступом к порталу.',
+    sections: [
+      { heading: 'Роль заказчика', points: ['Заказчик создаёт и контролирует только собственные заявки.', 'При создании заявки обязательны «Откуда» и «Куда»: подразделение из списка либо «Другой адрес» с ручным вводом.', 'Заказчик может просматривать и скачивать текущий реестр только своей заявки, а редактирование зависит от статуса и разрешённых полей.'] },
+      { heading: 'Роль диспетчера', points: ['Диспетчер обрабатывает заявки всех заказчиков, создаёт и редактирует заявки в рамках прав, изменяет статусы и контролирует транспортный поток.', 'Доступны обзор, календарь, заявки, отчёты и история.', 'Диспетчер может скачивать текущие реестры и выполнять массовые выгрузки.'] },
+      { heading: 'Роль УТЗ', points: ['УТЗ просматривает календарь и заявки всех заказчиков, использует фильтры и выгрузки.', 'Стандартные права УТЗ не включают редактирование заявок или изменение статусов.', 'УТЗ может скачивать текущие реестры в пределах назначенного доступа.'] },
+      { heading: 'Роль администратора', points: ['Администратор имеет полный доступ к обзору, календарю, заявкам, отчётам, истории, пользователям, справочникам и настройкам.', 'Администратор может создавать и редактировать заявки, изменять статусы, просматривать и скачивать реестры всех заявок.', 'В этом разделе администратору доступны все четыре инструкции. Обычные роли видят только собственную инструкцию.'] },
+      { heading: 'Управление пользователями', points: ['В разделе «Пользователи» создавайте учётные записи, назначайте роли и редактируйте доступ.', 'Назначайте минимально необходимую роль в соответствии с обязанностями сотрудника.', 'При блокировке учётной записи пользователь теряет возможность входа в портал.'] },
+      { heading: 'Справочник БЕ и РЦ', points: ['Поддерживайте актуальность справочника бизнес-единиц и распределительных центров.', 'Проверяйте наименование, код, тип подразделения и адрес: адрес из справочника автоматически подставляется в заявку.', 'Неактивные подразделения не должны использоваться для новых заявок; ранее созданные заявки должны сохранять исторические сведения.'] },
+      { heading: 'Настройки и слоты', points: ['Настраивайте лимит заявок на пользователя в месяц в зависимости от роли.', 'Настройка предварительной записи задаёт минимальный срок: 0 — можно на текущую дату, 1 — начиная со следующего дня. Для сотрудников действуют отдельные правила создания с текущей даты.', 'Управляйте количеством резервных слотов. Основные и резервные пулы независимы; направление в РЦ использует основной пул, другой адрес — резервный.', 'Загрузите актуальный шаблон реестра. Он не заменяет реестры, приложенные к отдельным заявкам.'] },
+      { heading: 'История, отчёты и контроль', points: ['Проверяйте историю изменений для разбора действий пользователей и спорных ситуаций.', 'Используйте отчёты для анализа заявок, направлений, типов груза и скорости закрытия.', 'Проверяйте массовые выгрузки и доступность текущих реестров при обращениях пользователей.'] }
+    ]
+  }
+}
+
+function InstructionsView({ role }: { role: Role }) {
+  const roles: Role[] = role === 'admin' ? ['customer', 'dispatcher', 'utz', 'admin'] : [role]
+  return <div className="instructions-page">
+    {roles.map((item) => {
+      const guide = instructionContent[item]
+      return <section className="surface-card instruction-card" key={item}>
+        <div className="instruction-card-heading"><div className="instruction-role-icon"><BookOpen size={19}/></div><div><h2>{guide.title}</h2><p>{guide.intro}</p></div></div>
+        <div className="instruction-sections">
+          {guide.sections.map((section) => <section className="instruction-section" key={section.heading}><h3>{section.heading}</h3><ul>{section.points.map((point, index) => <li key={index}>{point}</li>)}</ul></section>)}
+        </div>
+      </section>
+    })}
   </div>
 }
 
@@ -806,6 +872,7 @@ function getSubtitle(view: View, profile: Profile) {
   if (view === 'directory') return 'Добавление и редактирование бизнес-единиц и распределительных центров.'
   if (view === 'settings') return 'Настройка лимитов заявок и минимального срока предварительной записи.'
   if (view === 'history') return 'Журнал действий пользователей и изменений в системе.'
+  if (view === 'instructions') return profile.role === 'admin' ? 'Руководство по работе для всех ролей системы.' : `Руководство по работе для роли «${roleNames[profile.role]}».`
   return 'Справочник бизнес-единиц и распределительных центров.'
 }
 

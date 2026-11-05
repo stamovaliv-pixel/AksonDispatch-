@@ -1414,3 +1414,68 @@ html[data-theme="dark"] .calendar-day:not(.has-booking-count) .calendar-capaciti
 html[data-theme="dark"] .calendar-day:not(.has-booking-count) .calendar-capacities .capacity-reserve svg {
   color: #94a2b2 !important;
 }
+
+/* Role-specific user guide */
+.instructions-page {
+  display: grid;
+  gap: 18px;
+  max-width: 1120px;
+}
+.instruction-card {
+  padding: 22px 24px;
+}
+.instruction-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding-bottom: 17px;
+  border-bottom: 1px solid var(--border);
+}
+.instruction-role-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  color: #287eaf;
+  background: #eaf5fb;
+  border-radius: 12px;
+}
+.instruction-card-heading h2 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: -.02em;
+}
+.instruction-card-heading p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.instruction-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 26px;
+  padding-top: 18px;
+}
+.instruction-section h3 {
+  margin: 0 0 9px;
+  font-size: 12px;
+  color: var(--text);
+}
+.instruction-section ul {
+  margin: 0;
+  padding-left: 17px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.instruction-section li + li { margin-top: 6px; }
+html[data-theme="dark"] .instruction-role-icon {
+  color: #8dc9e9;
+  background: rgba(46, 133, 183, .17);
+}
+@media (max-width: 760px) {
+  .instruction-card { padding: 17px; }
+  .instruction-sections { grid-template-columns: 1fr; gap: 15px; }
+  .instruction-card-heading h2 { font-size: 15px; }
+}
