@@ -1199,3 +1199,108 @@ html[data-theme="dark"] .copy-field-button:hover { color: #93c5fd; border-color:
   .request-field-heading > label, .request-subfield-heading > label { font-size: 10px; }
   .copy-field-button { flex-basis: 28px; width: 28px; height: 28px; }
 }
+
+/* v1.0.6 — rolling 30-day calendar and aligned filter controls */
+/* Capacity symbols intentionally use the same neutral tone as their counts. */
+.calendar-capacities .capacity-main svg,
+.calendar-capacities .capacity-reserve svg {
+  color: inherit !important;
+}
+html[data-theme="dark"] .calendar-capacities .capacity-main svg,
+html[data-theme="dark"] .calendar-capacities .capacity-reserve svg {
+  color: inherit !important;
+}
+
+/* All calendar filters now use matching label/control rows and common control height. */
+.calendar-filters-split {
+  grid-template-columns: repeat(3, minmax(0, 1.1fr)) repeat(2, minmax(90px, .9fr)) auto auto;
+  align-items: end !important;
+  column-gap: 8px;
+  row-gap: 8px;
+}
+.calendar-filters-split > label {
+  display: grid;
+  align-content: end;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 52px;
+  gap: 5px;
+}
+.calendar-filters-split > label > span {
+  display: block;
+  min-height: 11px;
+  line-height: 11px;
+  white-space: nowrap;
+}
+.calendar-filters-split > label input,
+.calendar-filters-split > label select {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 34px;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 10px;
+  line-height: normal;
+}
+.calendar-filters-split > .icon-button {
+  align-self: end;
+  width: 34px;
+  height: 34px;
+  margin: 0;
+}
+.calendar-filters-split .calendar-filter-count {
+  display: flex;
+  align-items: center;
+  align-self: end;
+  justify-self: center;
+  min-height: 34px;
+  padding: 0 3px;
+  line-height: 1;
+}
+html[data-theme="dark"] .calendar-filters-split > label select {
+  background: #111923;
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+/* Calendar heading no longer displays a month selector: the range is rolling. */
+.calendar-toolbar-copy > span {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+@media (max-width: 1250px) {
+  .calendar-filters-split {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) repeat(2, minmax(0, .9fr)) auto auto;
+  }
+}
+@media (max-width: 850px) {
+  .calendar-filters-split {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: end !important;
+  }
+  .calendar-filters-split > .icon-button,
+  .calendar-filters-split .calendar-filter-count {
+    grid-column: 1 / -1;
+    justify-self: center;
+  }
+}
+@media (max-width: 620px) {
+  .calendar-filters-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .calendar-filters-split > label { min-height: 0; }
+  .calendar-filters-split > .icon-button,
+  .calendar-filters-split .calendar-filter-count {
+    grid-column: 1;
+    justify-self: center;
+  }
+}

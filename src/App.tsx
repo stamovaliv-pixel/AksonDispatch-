@@ -212,13 +212,20 @@ function App() {
   async function loadData(targetMonth: Date = month) {
     if (!supabase || !profile) return
     setLoading(true); setError('')
+    // The calendar itself is always a rolling 30-day window starting today.
+    // Keep the separately selected month window as well for the Requests page,
+    // whose month controls remain independent from the calendar.
     const first = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1)
     const offset = (first.getDay() + 6) % 7
-    const gridStart = new Date(first); gridStart.setDate(first.getDate() - offset)
-    const from = new Date(gridStart); if (showPrevious30Days) from.setDate(from.getDate() - 30)
-    const gridEnd = new Date(gridStart); gridEnd.setDate(gridStart.getDate() + 41)
+    const requestGridStart = new Date(first); requestGridStart.setDate(first.getDate() - offset)
+    const requestGridEnd = new Date(requestGridStart); requestGridEnd.setDate(requestGridStart.getDate() + 41)
+    const calendarStart = new Date(today)
+    if (showPrevious30Days) calendarStart.setDate(calendarStart.getDate() - 30)
+    const calendarEnd = new Date(today); calendarEnd.setDate(calendarEnd.getDate() + 29)
+    const from = new Date(Math.min(requestGridStart.getTime(), calendarStart.getTime()))
+    const to = new Date(Math.max(requestGridEnd.getTime(), calendarEnd.getTime()))
     const fromDate = iso(from)
-    const toDate = iso(gridEnd)
+    const toDate = iso(to)
     const searchEnd = new Date(today.getFullYear(), today.getMonth() + 3, 0)
     const searchFromDate = iso(today)
     const searchToDate = iso(searchEnd)
@@ -557,7 +564,9 @@ function App() {
 
       const savedDate = new Date(`${payload.transport_date}T00:00:00`)
       const savedMonth = new Date(savedDate.getFullYear(), savedDate.getMonth(), 1)
-      setRequestModal({ open: false }); setMonth(savedMonth); setSelectedDay(payload.transport_date); setView('calendar')
+      const calendarLastDay = new Date(today); calendarLastDay.setDate(calendarLastDay.getDate() + 29)
+      const savedDateIsVisible = payload.transport_date >= iso(today) && payload.transport_date <= iso(calendarLastDay)
+      setRequestModal({ open: false }); setMonth(savedMonth); setSelectedDay(savedDateIsVisible ? payload.transport_date : iso(today)); setView('calendar')
       setNotice(existing ? 'Заявка обновлена.' : 'Заявка создана.')
       await loadData(savedMonth)
       if (registryWarning) setError(`${registryWarning} Заявка сохранена; реестр можно добавить позднее, открыв её на редактирование.`)
@@ -674,12 +683,11 @@ function App() {
     else { setNotice(unit.is_active ? 'Элемент справочника деактивирован.' : 'Элемент справочника активирован.'); await loadData(); await loadHistory() }
   }
 
-  const calendarDays = useMemo(() => {
-    const first = new Date(month.getFullYear(), month.getMonth(), 1)
-    const offset = (first.getDay() + 6) % 7
-    const start = new Date(first); start.setDate(first.getDate() - offset)
-    return Array.from({ length: 42 }, (_, i) => { const day = new Date(start); day.setDate(start.getDate() + i); return day })
-  }, [month])
+  const calendarDays = useMemo(() => Array.from({ length: 30 }, (_, i) => {
+    const day = new Date(today)
+    day.setDate(today.getDate() + i)
+    return day
+  }), [])
 
   const visibleRequests = useMemo(() => {
     const scoped = requests.filter((request) => profile?.role !== 'customer' || request.requester_id === profile.id)
@@ -700,7 +708,7 @@ function App() {
   const ownRequests = requests.filter((r) => profile?.role !== 'customer' || r.requester_id === profile?.id)
   const selectedRequests = ownRequests.filter((r) => r.transport_date === selectedDay)
   const isAdmin = profile?.role === 'admin'
-  const pageTitles: Record<View, string> = { overview: 'Обзор', calendar: 'Календарь транспорта', requests: 'Заявки на транспорт', reports: 'Отчёты', users: 'Пользователи', directory: 'Справочник БЕ и РЦ', settings: 'Настройки', history: 'История изменений' }
+  const pageTitles: Record<View, string> = { overview: 'Обзор', calendar: 'Календарь', requests: 'Заявки на транспорт', reports: 'Отчёты', users: 'Пользователи', directory: 'Справочник БЕ и РЦ', settings: 'Настройки', history: 'История изменений' }
 
   if (!supabaseConfigured) return <SetupScreen />
   if (!session || !profile) return <LoginScreen login={login} password={password} setLogin={setLogin} setPassword={setPassword} signIn={signIn} busy={loginBusy} error={error} />
@@ -736,11 +744,11 @@ function App() {
         </nav>
       </aside>
       <main className="main-area">
-        <div className="page-topline"><div><h1>{pageTitles[view]}</h1><p>{getSubtitle(view, profile)}</p></div><div className="page-actions">{(view === 'calendar' || view === 'requests') && <MonthControls month={month} setMonth={(nextMonth) => { setMonth(nextMonth); setSelectedDay(iso(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1))) }} />}{view === 'requests' && <button className="button button-secondary" title="Очистить фильтры заявок" onClick={() => { setRequesterFilter(''); setFromFilter(''); setToFilter(''); setStatusFilter('all'); setShowCancelled(false) }}><RefreshCw size={15} /> Сбросить фильтры</button>}{(view === 'calendar' || view === 'requests') && canCreateRequest && <button className="button button-primary" title="Создать новую заявку на транспорт" onClick={() => setRequestModal({ open: true })}><Plus size={16} /> Новая заявка</button>}</div></div>
+        <div className="page-topline"><div><h1>{pageTitles[view]}</h1><p>{getSubtitle(view, profile)}</p></div><div className="page-actions">{view === 'requests' && <MonthControls month={month} setMonth={setMonth} />}{view === 'requests' && <button className="button button-secondary" title="Очистить фильтры заявок" onClick={() => { setRequesterFilter(''); setFromFilter(''); setToFilter(''); setStatusFilter('all'); setShowCancelled(false) }}><RefreshCw size={15} /> Сбросить фильтры</button>}{(view === 'calendar' || view === 'requests') && canCreateRequest && <button className="button button-primary" title="Создать новую заявку на транспорт" onClick={() => setRequestModal({ open: true })}><Plus size={16} /> Новая заявка</button>}</div></div>
         {error && <div className="message message-error"><AlertCircle size={17} /><span>{error}</span><button onClick={() => setError('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {notice && <div className="message message-success"><CheckCircle2 size={17} /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {view === 'overview' && profile.role !== 'customer' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} onOpenRequest={(request) => setRequestModal({ open: true, request })} onSelectFilter={(filter) => { setRequesterFilter(''); setFromFilter(''); setToFilter(''); setStatusFilter(filter); setShowCancelled(filter === 'all' || filter === 'cancelled'); setView('requests') }} />}
-        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} searchRequests={searchRequests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} reserveSlotLimit={Number(reserveSlotLimit) || 0} showPrevious30Days={showPrevious30Days} setShowPrevious30Days={setShowPrevious30Days} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} onExportCsv={exportSelectedRequestsCsv} onExportRegistries={exportSelectedRegistries} />}
+        {view === 'calendar' && <CalendarView days={calendarDays} requests={ownRequests} allRequests={requests} searchRequests={searchRequests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} reserveSlotLimit={Number(reserveSlotLimit) || 0} showPrevious30Days={showPrevious30Days} setShowPrevious30Days={setShowPrevious30Days} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} onExportCsv={exportSelectedRequestsCsv} onExportRegistries={exportSelectedRegistries} />}
         {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} requesterFilter={requesterFilter} setRequesterFilter={setRequesterFilter} fromFilter={fromFilter} setFromFilter={setFromFilter} toFilter={toFilter} setToFilter={setToFilter} statusFilter={statusFilter} setStatusFilter={setStatusFilter} showCancelled={showCancelled} setShowCancelled={setShowCancelled} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
         {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
         {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
@@ -767,7 +775,7 @@ function LoginScreen({ login, password, setLogin, setPassword, signIn, busy, err
 
 function getSubtitle(view: View, profile: Profile) {
   if (view === 'overview') return `Здравствуйте, ${profile.username}. Сводная информация по транспортным заявкам.`
-  if (view === 'calendar') return 'Планирование основных и резервных транспортных слотов.'
+  if (view === 'calendar') return 'Планирование основных и резервных транспортных слотов на ближайшие 30 дней.'
   if (view === 'reports') return 'Заявки, направления, типы груза и скорость закрытия за выбранный период.'
   if (view === 'requests') return 'Поиск, контроль статусов и работа с заявками за выбранный месяц.'
   if (view === 'users') return 'Создание учётных записей, редактирование ролей и управление доступом.'
@@ -802,8 +810,8 @@ function OverviewView({ profile, requests, occupancy, units, onNavigate, onReque
   </div>
 }
 
-function CalendarView({ month, days, requests, allRequests, searchRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, minCreateDate, reserveSlotLimit, showPrevious30Days, setShowPrevious30Days, onCreate, onOpen, onCancel, onDownloadRegistry, onExportCsv, onExportRegistries }: {
-  month: Date; days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; searchRequests: TransportRequest[]; slots: CalendarSlot[]; occupancy: SlotOccupancy[];
+function CalendarView({ days, requests, allRequests, searchRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, minCreateDate, reserveSlotLimit, showPrevious30Days, setShowPrevious30Days, onCreate, onOpen, onCancel, onDownloadRegistry, onExportCsv, onExportRegistries }: {
+  days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; searchRequests: TransportRequest[]; slots: CalendarSlot[]; occupancy: SlotOccupancy[];
   selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[]; minCreateDate: string; reserveSlotLimit: number;
   showPrevious30Days: boolean; setShowPrevious30Days: (v: boolean) => void;
   onCreate: (slot: number, date: string) => void; onOpen: (request: TransportRequest) => void; onCancel: (request: TransportRequest) => void;
@@ -872,20 +880,20 @@ function CalendarView({ month, days, requests, allRequests, searchRequests, slot
   const resultsTitle = filtersActive ? 'Ближайшие совпадения' : `Заявки за ${dateLabel(selectedDay, { day: 'numeric', month: 'long', year: 'numeric' })}`
   return <div className="calendar-page">
     <section className="surface-card calendar-card">
-      <div className="calendar-toolbar"><div className="calendar-toolbar-copy"><strong>Календарь транспортных слотов</strong></div><div className="calendar-toolbar-actions"><button type="button" className={`icon-button ${showPrevious30Days ? 'active' : ''}`} onClick={() => setShowPrevious30Days(!showPrevious30Days)} title={showPrevious30Days ? 'Скрыть предыдущие 30 дней' : 'Показать предыдущие 30 дней'}><CalendarClock size={17}/></button><button type="button" className={`icon-button calendar-export-toggle ${showExportTools ? 'active' : ''}`} onClick={() => setShowExportTools(!showExportTools)} aria-pressed={showExportTools} title={showExportTools ? 'Скрыть инструменты выгрузки' : 'Показать инструменты выгрузки'}><Download size={17}/></button><span className="calendar-toolbar-month">{monthTitle(month)}</span></div></div>
+      <div className="calendar-toolbar"><div className="calendar-toolbar-copy"><strong>Календарь</strong><span>Следующие 30 дней от текущей даты</span></div><div className="calendar-toolbar-actions"><button type="button" className={`icon-button ${showPrevious30Days ? 'active' : ''}`} onClick={() => setShowPrevious30Days(!showPrevious30Days)} title={showPrevious30Days ? 'Скрыть предыдущие 30 дней' : 'Показать предыдущие 30 дней'}><CalendarClock size={17}/></button><button type="button" className={`icon-button calendar-export-toggle ${showExportTools ? 'active' : ''}`} onClick={() => setShowExportTools(!showExportTools)} aria-pressed={showExportTools} title={showExportTools ? 'Скрыть инструменты выгрузки' : 'Показать инструменты выгрузки'}><Download size={17}/></button></div></div>
       {showExportTools && <div className="calendar-export-toolbar"><span>Выбрано дней: <b>{selectedExportDates.length}</b></span><button className="button button-secondary button-compact" disabled={!selectedExportDates.length || exportBusy} onClick={async () => { setExportBusy(true); try { await onExportRegistries(selectedExportDates) } finally { setExportBusy(false) } }}><FileSpreadsheet size={14}/> Объединить реестры</button><button className="button button-secondary button-compact" disabled={!selectedExportDates.length || exportBusy} onClick={() => onExportCsv(selectedExportDates)}><Download size={14}/> Выгрузить список CSV</button><button className="icon-button small" onClick={() => setSelectedExportDates([])} title="Снять отметки со всех дат"><X size={14}/></button></div>}
       {!isCustomer && <div className="calendar-filters calendar-filters-split">
         <label><span>Заказчик</span><input value={customerFilter} onChange={(e) => setCustomerFilter(e.target.value)} placeholder="Логин заказчика"/></label>
         <label><span>Откуда</span><input value={fromFilter} onChange={(e) => setFromFilter(e.target.value)} placeholder="БЕ или адрес отправления"/></label>
         <label><span>Куда</span><input value={toFilter} onChange={(e) => setToFilter(e.target.value)} placeholder="РЦ или адрес назначения"/></label>
-        <select value={cargoFilter} onChange={(e) => setCargoFilter(e.target.value)} title="Фильтр по типу груза"><option value="all">Все типы груза</option><option value="goods">Товар</option><option value="equipment">Оборудование</option><option value="packaging">Тара</option></select>
-        <select value={capacityFilter} onChange={(e) => setCapacityFilter(e.target.value)} title="Фильтр по грузоподъёмности"><option value="all">Любой тоннаж</option><option value="1.5">1,5 т</option><option value="5">5 т</option><option value="10">10 т</option><option value="20">20 т</option></select>
+        <label><span>Тип груза</span><select value={cargoFilter} onChange={(e) => setCargoFilter(e.target.value)} title="Фильтр по типу груза"><option value="all">Все типы груза</option><option value="goods">Товар</option><option value="equipment">Оборудование</option><option value="packaging">Тара</option></select></label>
+        <label><span>Грузоподъёмность</span><select value={capacityFilter} onChange={(e) => setCapacityFilter(e.target.value)} title="Фильтр по грузоподъёмности"><option value="all">Любой тоннаж</option><option value="1.5">1,5 т</option><option value="5">5 т</option><option value="10">10 т</option><option value="20">20 т</option></select></label>
         {filtersActive && <button className="icon-button small" title="Сбросить фильтры календаря" onClick={() => { setCustomerFilter(''); setFromFilter(''); setToFilter(''); setCargoFilter('all'); setCapacityFilter('all') }}><X size={14}/></button>}
         <span className="calendar-filter-count">Найдено: <b>{matchedCount}</b></span>
       </div>}
       {showPrevious30Days && <><div className="calendar-period-caption">Предыдущие 30 дней</div><div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div><div className="calendar-grid calendar-previous-grid">{Array.from({ length: (previousStart.getDay() + 6) % 7 }, (_, i) => <span key={`pad-${i}`} className="calendar-grid-pad"/>)}{previous30Days.map((day, index) => renderDay(day, true, true, ((previousStart.getDay() + 6) % 7) + index))}</div></>}
       <div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div>
-      <div className="calendar-grid">{days.map((day, index) => renderDay(day, day.getMonth() !== month.getMonth(), false, index))}</div>
+      <div className="calendar-grid">{Array.from({ length: (days[0].getDay() + 6) % 7 }, (_, i) => <span key={`forward-pad-${i}`} className="calendar-grid-pad"/>)}{days.map((day, index) => renderDay(day, false, false, ((days[0].getDay() + 6) % 7) + index))}</div>
       <div className="calendar-foot"><span><span className="online-dot"/> Заявок за выбранный период: {allRequests.filter((r) => r.status !== 'cancelled').length}</span><div className="calendar-foot-legend"><span><Warehouse size={13}/> Основные слоты — направление в РЦ</span><span><MapPin size={13}/> Резервные слоты — другие адреса</span></div></div>
     </section>
     <section className="surface-card selected-day-card">
