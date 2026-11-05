@@ -34,6 +34,7 @@ export interface TransportRequest {
   registry_file_name?: string | null
   transport_date: string
   slot_number: number
+  slot_type: 'main' | 'reserve'
   from_unit_id: string | null
   from_other_address: string | null
   to_unit_id: string | null
@@ -42,6 +43,8 @@ export interface TransportRequest {
   loading_type: 'rear' | 'side'
   status: RequestStatus
   dispatcher_comment: string | null
+  created_at?: string
+  updated_at?: string
   transport_task_number?: string | null
   request_comment?: string | null
   profiles?: { username: string } | null

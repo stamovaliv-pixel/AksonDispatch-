@@ -5,7 +5,7 @@ import {
   CircleHelp, FileSpreadsheet, Filter, LayoutDashboard, LogOut, Menu, Moon,
   Package, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sun, Truck, Users,
   Warehouse, X, Pencil, Ban, Eye, Layers3, History as HistoryIcon, Save,
-  SlidersHorizontal, Clock3, Upload, Download, FileText
+  SlidersHorizontal, Clock3, Upload, Download, FileText, MapPin, CalendarClock
 } from 'lucide-react'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRequest } from './types'
@@ -13,15 +13,15 @@ import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRe
 type View = 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'directory' | 'settings' | 'history'
 type RequestListFilter = 'all' | 'active' | RequestStatus
 type RequestDraft = {
-  transport_date: string; slot_number: number; from_unit_id: string | null; from_other_address: string | null;
+  transport_date: string; slot_number: number; slot_type: 'main' | 'reserve'; from_unit_id: string | null; from_other_address: string | null;
   to_unit_id: string | null; to_other_address: string | null; capacity_tons: number; loading_type: 'rear' | 'side';
   cargo_types: string[]; stock_pallets: number; kdk_pallets: number; packaging_qty: number; equipment_pallet_places: number; requester_id?: string; registry_file?: File | null; transport_task_number: string; request_comment: string
 }
 type UnitDraft = { id?: string | null; code: string; name: string; kind: 'BE' | 'RC'; address: string }
 type AuditRecord = { id: number; actor_id: string | null; action: string; entity_type: string; entity_id: string | null; details: Record<string, any>; created_at: string; actor_username?: string | null }
 type RoleLimitValues = Record<Role, string>
-type SlotOccupancy = { transport_date: string; slot_number: number }
-type CalendarSlot = { transport_date: string; slot_number: number; status: RequestStatus; from_be_code: string }
+type SlotOccupancy = { transport_date: string; slot_number: number; slot_type: 'main' | 'reserve' }
+type CalendarSlot = { transport_date: string; slot_number: number; slot_type: 'main' | 'reserve'; status: RequestStatus; from_be_code: string }
 type ReportRow = { section: 'summary' | 'customer' | 'from' | 'to' | 'cargo' | 'closing_speed' | 'status'; label: string; request_count: number; average_close_days: number | null; closed_count: number; open_count: number }
 
 const roleNames: Record<Role, string> = { customer: 'Заказчик', dispatcher: 'Диспетчер', utz: 'УТЗ', admin: 'Администратор' }
@@ -41,6 +41,7 @@ const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart
 const monthTitle = (d: Date) => d.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
 const dateLabel = (value: string, options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long', year: 'numeric' }) => new Date(`${value}T00:00:00`).toLocaleDateString('ru-RU', options)
 const errorText = (e: unknown) => e instanceof Error ? e.message : 'Не удалось выполнить операцию. Попробуйте ещё раз.'
+const matchesAllTerms = (text: string, query: string) => { const terms = query.toLocaleLowerCase('ru-RU').trim().split(/\s+/).filter(Boolean); const normalized = text.toLocaleLowerCase('ru-RU'); return terms.every((term) => normalized.includes(term)) }
 
 function App() {
   const [session, setSession] = useState<any>(null)
@@ -50,6 +51,7 @@ function App() {
   const [requests, setRequests] = useState<TransportRequest[]>([])
   const [occupancy, setOccupancy] = useState<SlotOccupancy[]>([])
   const [calendarSlots, setCalendarSlots] = useState<CalendarSlot[]>([])
+  const [searchRequests, setSearchRequests] = useState<TransportRequest[]>([])
   const [people, setPeople] = useState<Profile[]>([])
   const [view, setView] = useState<View>('overview')
   const [month, setMonth] = useState(new Date(today.getFullYear(), today.getMonth(), 1))
@@ -62,8 +64,13 @@ function App() {
   const [login, setLogin] = useState('')
   const [password, setPassword] = useState('')
   const [loginBusy, setLoginBusy] = useState(false)
-  const [search, setSearch] = useState('')
+  const [requesterFilter, setRequesterFilter] = useState('')
+  const [fromFilter, setFromFilter] = useState('')
+  const [toFilter, setToFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<RequestListFilter>('all')
+  const [showCancelled, setShowCancelled] = useState(false)
+  const [showPrevious30Days, setShowPrevious30Days] = useState(false)
+  const [reserveSlotLimit, setReserveSlotLimit] = useState('3')
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { return localStorage.getItem('akson-transport-theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' }
   })
@@ -134,13 +141,13 @@ function App() {
       if (profileError || !data) { setError(`Не удалось загрузить профиль: ${profileError?.message || 'профиль не найден'}`); return }
       if (!data.is_active) { await supabase?.auth.signOut(); setError('Учётная запись заблокирована администратором.'); return }
       setProfile(data as Profile)
-      setView(data.role === 'utz' ? 'calendar' : 'overview')
+      setView(data.role === 'utz' || data.role === 'customer' ? 'calendar' : 'overview')
       setError('')
     })
     return () => { alive = false }
   }, [session])
 
-  useEffect(() => { if (profile) void loadData() }, [profile, month])
+  useEffect(() => { if (profile) void loadData() }, [profile, month, showPrevious30Days])
 
   // Receive a minimal server-side broadcast when any request changes.
   // The message carries no request data; each role reloads through its own RLS scope.
@@ -164,7 +171,7 @@ function App() {
       realtimeRefreshTimer.current = null
       void client.removeChannel(channel)
     }
-  }, [profile?.id, month.getTime()])
+  }, [profile?.id, month.getTime(), showPrevious30Days])
   useEffect(() => {
     if (!profile) return
     void loadSettings()
@@ -184,25 +191,40 @@ function App() {
   async function loadData(targetMonth: Date = month) {
     if (!supabase || !profile) return
     setLoading(true); setError('')
-    const fromDate = iso(new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1))
-    const toDate = iso(new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0))
-    let unitsQuery = supabase.from('business_units').select('*').order('code')
-    if (profile.role === 'customer') unitsQuery = unitsQuery.eq('is_active', true)
-    const [unitResult, requestResult, occupancyResult, calendarSlotResult] = await Promise.all([
+    const first = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1)
+    const offset = (first.getDay() + 6) % 7
+    const gridStart = new Date(first); gridStart.setDate(first.getDate() - offset)
+    const from = new Date(gridStart); if (showPrevious30Days) from.setDate(from.getDate() - 30)
+    const gridEnd = new Date(gridStart); gridEnd.setDate(gridStart.getDate() + 41)
+    const fromDate = iso(from)
+    const toDate = iso(gridEnd)
+    const searchEnd = new Date(today.getFullYear(), today.getMonth() + 3, 0)
+    const searchFromDate = iso(today)
+    const searchToDate = iso(searchEnd)
+    // Fetch all directory rows visible under RLS. Customers can see inactive rows only
+    // when they are referenced by their own historical requests, so saved route
+    // addresses remain readable after a directory entry is deactivated.
+    const unitsQuery = supabase.from('business_units').select('*').order('code')
+    const requestsSelect = '*, profiles!transport_requests_requester_id_fkey(username), business_units!transport_requests_business_unit_id_fkey(code,name), request_cargo(cargo_type,stock_pallets,kdk_pallets,packaging_qty,equipment_pallet_places)'
+    const [unitResult, requestResult, occupancyResult, calendarSlotResult, searchResult] = await Promise.all([
       unitsQuery,
-      supabase.from('transport_requests')
-        .select('*, profiles!transport_requests_requester_id_fkey(username), business_units!transport_requests_business_unit_id_fkey(code,name), request_cargo(cargo_type,stock_pallets,kdk_pallets,packaging_qty,equipment_pallet_places)')
-        .gte('transport_date', fromDate).lte('transport_date', toDate).order('transport_date').order('slot_number'),
+      supabase.from('transport_requests').select(requestsSelect)
+        .gte('transport_date', fromDate).lte('transport_date', toDate).order('transport_date').order('slot_type').order('slot_number'),
       supabase.rpc('get_slot_occupancy', { p_from_date: fromDate, p_to_date: toDate }),
-      supabase.rpc('get_calendar_slot_summary', { p_from_date: fromDate, p_to_date: toDate })
+      supabase.rpc('get_calendar_slot_summary', { p_from_date: fromDate, p_to_date: toDate }),
+      ['dispatcher', 'admin', 'utz'].includes(profile.role)
+        ? supabase.from('transport_requests').select(requestsSelect).gte('transport_date', searchFromDate).lte('transport_date', searchToDate).neq('status', 'cancelled').neq('status', 'completed').order('transport_date').order('slot_type').order('slot_number')
+        : Promise.resolve({ data: [], error: null } as any)
     ])
     if (unitResult.error) setError(`Справочник: ${unitResult.error.message}`)
     else setUnits((unitResult.data || []) as BusinessUnit[])
     if (requestResult.error) setError(`Заявки: ${requestResult.error.message}`)
     else setRequests((requestResult.data || []) as TransportRequest[])
-    if (occupancyResult.error) setError(`Занятость слотов: ${occupancyResult.error.message}. Примените миграцию 0002_admin_workspace.sql.`)
+    if (searchResult.error) setError(`Поиск по календарю: ${searchResult.error.message}`)
+    else setSearchRequests((searchResult.data || []) as TransportRequest[])
+    if (occupancyResult.error) setError(`Занятость слотов: ${occupancyResult.error.message}. Проверьте миграцию 0010_split_main_and_reserve_transport_slots.sql.`)
     else setOccupancy((occupancyResult.data || []) as SlotOccupancy[])
-    if (calendarSlotResult.error) setError(`Сводка календаря: ${calendarSlotResult.error.message}. Примените миграцию 0004_role_permissions_calendar_reports.sql.`)
+    if (calendarSlotResult.error) setError(`Сводка календаря: ${calendarSlotResult.error.message}. Проверьте миграции 0004_role_permissions_calendar_reports.sql и 0010_split_main_and_reserve_transport_slots.sql.`)
     else setCalendarSlots((calendarSlotResult.data || []) as CalendarSlot[])
     setLoading(false)
   }
@@ -219,14 +241,15 @@ function App() {
   async function loadSettings() {
     if (!supabase || !profile) return
     const [settingsResult, limitsResult] = await Promise.all([
-      supabase.from('portal_settings').select('booking_advance_days,registry_template_path,registry_template_name').eq('id', true).maybeSingle(),
+      supabase.from('portal_settings').select('booking_advance_days,registry_template_path,registry_template_name,reserve_slot_limit').eq('id', true).maybeSingle(),
       supabase.from('role_request_limits').select('role,max_requests_per_month')
     ])
-    if (settingsResult.error) { setError(`Настройки записи: ${settingsResult.error.message}. Примените миграцию 0003_admin_controls_audit.sql.`); return }
+    if (settingsResult.error) { setError(`Настройки записи: ${settingsResult.error.message}. Проверьте миграции 0003_admin_controls_audit.sql и 0010_split_main_and_reserve_transport_slots.sql.`); return }
     if (settingsResult.data) {
       setBookingAdvanceDays(String(settingsResult.data.booking_advance_days ?? 0))
       setRegistryTemplatePath(settingsResult.data.registry_template_path || null)
       setRegistryTemplateName(settingsResult.data.registry_template_name || null)
+      setReserveSlotLimit(String(settingsResult.data.reserve_slot_limit ?? 3))
     }
     if (limitsResult.error) { setError(`Лимиты заявок: ${limitsResult.error.message}. Примените миграцию 0003_admin_controls_audit.sql.`); return }
     const next: RoleLimitValues = { customer: '30', dispatcher: '30', utz: '30', admin: '30' }
@@ -273,16 +296,20 @@ function App() {
     if (!supabase || profile?.role !== 'admin') return
     const advance = Number(bookingAdvanceDays)
     const limits = Object.fromEntries(Object.entries(roleLimits).map(([role, value]) => [role, Number(value)])) as Record<Role, number>
+    const reserveLimit = Number(reserveSlotLimit)
     if (!Number.isInteger(advance) || advance < 0 || advance > 365) { setError('Срок предварительной записи должен быть от 0 до 365 дней.'); return }
+    if (!Number.isInteger(reserveLimit) || reserveLimit < 0 || reserveLimit > 20) { setError('Количество резервных слотов должно быть от 0 до 20.'); return }
     if (Object.entries(limits).some(([, value]) => !Number.isInteger(value) || value < 1 || value > 10000)) { setError('Месячный лимит по каждой роли должен быть от 1 до 10 000 заявок.'); return }
     setSaving(true); setError('')
     const { error: saveError } = await supabase.rpc('admin_save_portal_settings', {
       p_booking_advance_days: advance,
       p_role_limits: limits
     })
+    if (saveError) { setSaving(false); setError(`Не удалось сохранить настройки: ${saveError.message}`); return }
+    const { data: reserveUpdated, error: reserveError } = await supabase.from('portal_settings').update({ reserve_slot_limit: reserveLimit, updated_at: new Date().toISOString() }).eq('id', true).select('id').maybeSingle()
     setSaving(false)
-    if (saveError) setError(`Не удалось сохранить настройки: ${saveError.message}`)
-    else { setNotice('Настройки ограничений сохранены.'); await loadSettings(); await loadHistory() }
+    if (reserveError || !reserveUpdated) setError(`Не удалось сохранить количество резервных слотов: ${reserveError?.message || 'запись не обновлена'}`)
+    else { setNotice('Настройки ограничений и резервных слотов сохранены.'); await loadSettings(); await loadHistory(); await loadData() }
   }
 
   async function downloadPrivateFile(path: string | null | undefined, fileName?: string | null) {
@@ -301,6 +328,66 @@ function App() {
     await downloadPrivateFile(registryTemplatePath, registryTemplateName || 'Шаблон_реестра')
   }
 
+  async function exportSelectedRequestsCsv(selectedDates: string[]) {
+    const dates = new Set(selectedDates)
+    const rows = requests.filter((r) => dates.has(r.transport_date) && (profile?.role !== 'customer' || r.requester_id === profile.id))
+      .sort((a, b) => b.request_no - a.request_no)
+    if (!rows.length) { setError('На выбранные даты нет заявок для выгрузки.'); return }
+    const headers = ['ID заявки','Номер заявки','ID заказчика','Заказчик','ID БЕ заказчика','БЕ заказчика','Наименование БЕ заказчика','Адрес БЕ заказчика','Дата перевозки','Тип слота','Номер слота','ID отправления','Откуда','Адрес отправления','ID назначения','Куда','Адрес назначения','Грузоподъёмность, т','Тип погрузки','Типы груза','Сток, паллетомест','Кросс док, паллетомест','Тара, шт.','Оборудование, паллетомест','Номер задания на перевозку','Комментарий заказчика','Комментарий диспетчера','Путь к реестру','Имя реестра','Статус','Создана','Обновлена']
+    const dataRows = rows.map((r) => {
+      const cargo = r.request_cargo || []
+      const fromUnit = units.find((u) => u.id === r.from_unit_id)
+      const toUnit = units.find((u) => u.id === r.to_unit_id)
+      const customerUnit = units.find((u) => u.id === r.business_unit_id)
+      return [r.id,r.request_no,r.requester_id,r.profiles?.username || '',r.business_unit_id || '',customerUnit?.code || r.business_units?.code || '',customerUnit?.name || r.business_units?.name || '',customerUnit?.address || '',r.transport_date,r.slot_type === 'main' ? 'Основной' : 'Резервный',r.slot_number,r.from_unit_id || '',resolveUnit(units,r.from_unit_id,r.from_other_address),r.from_unit_id ? fromUnit?.address || '' : r.from_other_address || '',r.to_unit_id || '',resolveUnit(units,r.to_unit_id,r.to_other_address),r.to_unit_id ? toUnit?.address || '' : r.to_other_address || '',r.capacity_tons,r.loading_type === 'rear' ? 'Задняя' : 'Боковая',cargo.map((c) => cargoNames[c.cargo_type] || c.cargo_type).join(', '),cargo.find((c) => c.cargo_type === 'goods')?.stock_pallets || 0,cargo.find((c) => c.cargo_type === 'goods')?.kdk_pallets || 0,cargo.find((c) => c.cargo_type === 'packaging')?.packaging_qty || 0,cargo.find((c) => c.cargo_type === 'equipment')?.equipment_pallet_places || 0,r.transport_task_number || '',r.request_comment || '',r.dispatcher_comment || '',r.registry_file_path || '',r.registry_file_name || '',statusNames[r.status],r.created_at || '',r.updated_at || '']
+    })
+    const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const csv = '\uFEFF' + [headers, ...dataRows].map((row) => row.map(escape).join(';')).join('\r\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
+    const link = document.createElement('a'); link.href = url; link.download = `akson-transport-requests-${selectedDates.length}-days-${iso(today)}.csv`; link.click(); URL.revokeObjectURL(url)
+  }
+
+  async function exportSelectedRegistries(selectedDates: string[]) {
+    if (!supabase || !profile) return
+    const dateSet = new Set(selectedDates)
+    const targets = requests.filter((r) => dateSet.has(r.transport_date) && !!r.registry_file_path && (profile.role !== 'customer' || r.requester_id === profile.id))
+    if (!targets.length) { setError('Во вложениях заявок выбранных дней нет реестров для объединения.'); return }
+    setSaving(true); setError(''); setNotice('')
+    try {
+      const XLSX = await import('xlsx')
+      const merged: Record<string, unknown>[] = []
+      const allKeys = new Set<string>(['Система: Номер заявки','Система: Дата перевозки','Система: Заказчик','Система: Имя реестра','Система: Лист'])
+      for (const request of targets) {
+        const { data: file, error: fileError } = await supabase.storage.from('dispatch-files').download(request.registry_file_path!)
+        if (fileError || !file) throw new Error(`Не удалось скачать ${request.registry_file_name || `реестр заявки №${request.request_no}`}: ${fileError?.message || 'файл недоступен'}`)
+        const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: false })
+        for (const sheetName of workbook.SheetNames) {
+          const sheet = workbook.Sheets[sheetName]
+          const values = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false })
+          if (!values.length) continue
+          const rawHeaders = values[0].map((v, i) => String(v || `Колонка ${i + 1}`).trim())
+          const headers = rawHeaders.map((header, i) => rawHeaders.indexOf(header) === i ? header : `${header}_${i + 1}`)
+          headers.forEach((h) => allKeys.add(h))
+          values.slice(1).forEach((row) => {
+            if (!row.some((v) => String(v ?? '').trim())) return
+            const record: Record<string, unknown> = { 'Система: Номер заявки': request.request_no, 'Система: Дата перевозки': request.transport_date, 'Система: Заказчик': request.profiles?.username || '', 'Система: Имя реестра': request.registry_file_name || '', 'Система: Лист': sheetName }
+            headers.forEach((header, i) => { record[header] = row[i] ?? '' })
+            merged.push(record)
+          })
+        }
+      }
+      if (!merged.length) throw new Error('В выбранных реестрах нет строк с данными.')
+      const headers = Array.from(allKeys)
+      const workbook = XLSX.utils.book_new()
+      const sheet = XLSX.utils.json_to_sheet(merged, { header: headers })
+      sheet['!cols'] = headers.map((h) => ({ wch: Math.min(40, Math.max(14, h.length + 2)) }))
+      XLSX.utils.book_append_sheet(workbook, sheet, 'Общий реестр')
+      XLSX.writeFile(workbook, `akson-consolidated-registries-${iso(today)}.xlsx`)
+      setNotice(`Объединено ${targets.length} реестр(ов) в одну таблицу.`)
+    } catch (e) { setError(`Не удалось объединить реестры: ${errorText(e)}`) }
+    finally { setSaving(false) }
+  }
+
   async function uploadRequestRegistry(request: TransportRequest, file: File) {
     if (!supabase || !profile) throw new Error('Нет подключения к Supabase.')
     const ownCustomer = profile.role === 'customer' && request.requester_id === profile.id
@@ -315,10 +402,14 @@ function App() {
     const storagePath = `requests/${request.id}/${crypto.randomUUID()}-${safeName}`
     const { error: uploadError } = await supabase.storage.from('dispatch-files').upload(storagePath, file, { upsert: false, contentType: file.type || 'application/octet-stream' })
     if (uploadError) throw uploadError
-    const { error: attachError } = await supabase.from('transport_requests').update({ registry_file_path: storagePath, registry_file_name: file.name }).eq('id', request.id)
-    if (attachError) {
+    const { data: attachedRow, error: attachError } = await supabase.from('transport_requests')
+      .update({ registry_file_path: storagePath, registry_file_name: file.name })
+      .eq('id', request.id).select('id').maybeSingle()
+    if (attachError || !attachedRow) {
       await supabase.storage.from('dispatch-files').remove([storagePath])
-      throw attachError
+      throw new Error(attachError
+        ? `Не удалось привязать файл к заявке: ${attachError.message}`
+        : 'Файл загружен в хранилище, но запись заявки не обновлена. Проверьте права UPDATE для вашей роли.')
     }
     if (request.registry_file_path) {
       const { error: removeError } = await supabase.storage.from('dispatch-files').remove([request.registry_file_path])
@@ -386,7 +477,7 @@ function App() {
         : (requesterProfile.business_unit_id || null)
       const base = {
         requester_id: requesterId, business_unit_id: businessUnitId,
-        transport_date: payload.transport_date, slot_number: payload.slot_number,
+        transport_date: payload.transport_date, slot_number: payload.slot_number, slot_type: payload.slot_type,
         from_unit_id: payload.from_unit_id, from_other_address: payload.from_other_address,
         to_unit_id: payload.to_unit_id, to_other_address: payload.to_other_address,
         capacity_tons: payload.capacity_tons, loading_type: payload.loading_type,
@@ -395,8 +486,10 @@ function App() {
       }
       let id = existing?.id
       if (existing) {
-        const { error: updateError } = await supabase.from('transport_requests').update(base).eq('id', existing.id)
+        const { data: updatedRow, error: updateError } = await supabase.from('transport_requests')
+          .update(base).eq('id', existing.id).select('id').maybeSingle()
         if (updateError) throw updateError
+        if (!updatedRow) throw new Error('Заявка не обновлена: база данных не вернула изменённую запись. Проверьте права вашей роли.')
       } else {
         const { data, error: insertError } = await supabase.from('transport_requests').insert(base).select('id').single()
         if (insertError) throw insertError
@@ -427,10 +520,12 @@ function App() {
           const { error: uploadError } = await supabase.storage.from('dispatch-files').upload(storagePath, file, { upsert: false, contentType: file.type || 'application/octet-stream' })
           if (uploadError) registryWarning = `Не удалось прикрепить реестр: ${uploadError.message}`
           else {
-            const { error: attachError } = await supabase.from('transport_requests').update({ registry_file_path: storagePath, registry_file_name: file.name }).eq('id', id)
-            if (attachError) {
+            const { data: attachedRow, error: attachError } = await supabase.from('transport_requests')
+              .update({ registry_file_path: storagePath, registry_file_name: file.name })
+              .eq('id', id).select('id').maybeSingle()
+            if (attachError || !attachedRow) {
               await supabase.storage.from('dispatch-files').remove([storagePath])
-              registryWarning = `Заявка сохранена, но реестр не прикреплён: ${attachError.message}`
+              registryWarning = `Заявка сохранена, но реестр не прикреплён: ${attachError?.message || 'база данных не обновила запись заявки. Проверьте права UPDATE для вашей роли.'}`
             } else if (existing?.registry_file_path) {
               const { error: removeOldError } = await supabase.storage.from('dispatch-files').remove([existing.registry_file_path])
               if (removeOldError) console.warn('Не удалось удалить заменённый реестр из Storage:', removeOldError.message)
@@ -569,14 +664,15 @@ function App() {
     const scoped = requests.filter((request) => profile?.role !== 'customer' || request.requester_id === profile.id)
     return scoped.filter((request) => {
       const matchesStatus = statusFilter === 'all' || (statusFilter === 'active' ? !['cancelled', 'completed'].includes(request.status) : request.status === statusFilter)
-      const query = search.trim().toLowerCase()
-      const fromName = resolveUnit(units, request.from_unit_id, request.from_other_address).toLowerCase()
-      const toName = resolveUnit(units, request.to_unit_id, request.to_other_address).toLowerCase()
       const requester = request.profiles?.username?.toLowerCase() || ''
-      const matchesQuery = !query || String(request.request_no).includes(query) || fromName.includes(query) || toName.includes(query) || requester.includes(query) || (request.transport_task_number || '').toLowerCase().includes(query) || (request.request_comment || '').toLowerCase().includes(query)
-      return matchesStatus && matchesQuery
-    })
-  }, [requests, profile, statusFilter, search, units])
+      const fromUnit = units.find((u) => u.id === request.from_unit_id)
+      const toUnit = units.find((u) => u.id === request.to_unit_id)
+      const fromName = `${fromUnit?.kind === 'BE' ? 'БЕ' : ''} ${resolveUnit(units, request.from_unit_id, request.from_other_address)} ${request.from_unit_id ? fromUnit?.address || '' : request.from_other_address || ''}`.toLowerCase()
+      const toName = `${toUnit ? (toUnit.kind === 'RC' ? 'РЦ' : 'БЕ') : ''} ${resolveUnit(units, request.to_unit_id, request.to_other_address)} ${request.to_unit_id ? toUnit?.address || '' : request.to_other_address || ''}`.toLowerCase()
+      const matchesCancelled = showCancelled || statusFilter === 'cancelled' || request.status !== 'cancelled'
+      return matchesStatus && matchesCancelled && matchesAllTerms(requester, requesterFilter) && matchesAllTerms(fromName, fromFilter) && matchesAllTerms(toName, toFilter)
+    }).sort((a, b) => b.request_no - a.request_no)
+  }, [requests, profile, statusFilter, requesterFilter, fromFilter, toFilter, showCancelled, units])
 
   const activeRequests = requests.filter((r) => r.status !== 'cancelled')
   const countStatus = (status: RequestStatus) => requests.filter((r) => r.status === status).length
@@ -605,37 +701,36 @@ function App() {
     <div className="top-gradient-bar" />
     <header className="app-topbar">
       <button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={19} /></button>
-      <div className="brand-area"><img src={theme === 'dark' ? '/assets/logistic-logo-dark.svg' : '/assets/logistic-logo.svg'} alt="Аксон Логистика" /><span className="brand-divider" /><div className="brand-product"><strong>Транспорт</strong><small>Портал заказов БЕ → РЦ</small></div></div>
+      <div className="brand-area"><img src={theme === 'dark' ? '/assets/logistic-logo-dark.svg' : '/assets/logistic-logo.svg'} alt="Аксон Логистика" /><span className="brand-divider" /><div className="brand-product"><strong>Аксон Диспетчерская</strong><small>портал заказа транспорта</small></div></div>
       <div className="topbar-right"><div className="today-chip"><CalendarDays size={15} /><span>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</span></div><button className="icon-button" title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><div className="profile-chip"><div className="avatar">{profile.username.slice(0, 1).toUpperCase()}</div><div><strong>{profile.username}</strong><small>{roleNames[profile.role]}</small></div><ChevronDown size={14} /></div><button className="icon-button logout-button" title="Выйти" onClick={signOut}><LogOut size={17} /></button></div>
     </header>
     <div className="workspace">
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
         <nav className="side-nav">
-          {navItems.filter((item) => (profile.role !== 'utz' || item.key !== 'overview') && (!item.admin || isAdmin) && (!item.staff || canViewStaffPages)).map((item) => {
+          {navItems.filter((item) => (profile.role !== 'utz' && profile.role !== 'customer' || item.key !== 'overview') && (!item.admin || isAdmin) && (!item.staff || canViewStaffPages)).map((item) => {
             const Icon = item.icon
             return <button key={item.key} className={`nav-link ${view === item.key ? 'active' : ''}`} onClick={() => { setView(item.key); setSidebarOpen(false); setError(''); setNotice('') }}><Icon size={18} /><span>{item.label}</span>{item.key === 'requests' && activeRequests.length > 0 && <em>{activeRequests.length}</em>}</button>
           })}
         </nav>
-        <div className="sidebar-bottom"><div className="sidebar-help"><div className="help-icon"><ShieldCheck size={17} /></div><strong>Рабочая система</strong><p>Доступ к заявкам ограничен вашей ролью.</p></div><div className="sidebar-foot"><span className="online-dot" /> Supabase подключён</div></div>
       </aside>
       <main className="main-area">
-        <div className="page-topline"><div><div className="breadcrumbs">АКСОН ЛОГИСТИКА <span>/</span> {pageTitles[view].toUpperCase()}</div><h1>{pageTitles[view]}</h1><p>{getSubtitle(view, profile)}</p></div><div className="page-actions">{(view === 'calendar' || view === 'requests') && <MonthControls month={month} setMonth={(nextMonth) => { setMonth(nextMonth); setSelectedDay(iso(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1))) }} />}{view === 'requests' && <button className="button button-secondary" title="Очистить строку поиска и фильтр статуса" onClick={() => { setSearch(''); setStatusFilter('all') }}><RefreshCw size={15} /> Сбросить фильтры</button>}{(view === 'calendar' || view === 'requests') && canCreateRequest && <button className="button button-primary" title="Создать новую заявку на транспорт" onClick={() => setRequestModal({ open: true })}><Plus size={16} /> Новая заявка</button>}</div></div>
+        <div className="page-topline"><div><div className="breadcrumbs">АКСОН ЛОГИСТИКА <span>/</span> {pageTitles[view].toUpperCase()}</div><h1>{pageTitles[view]}</h1><p>{getSubtitle(view, profile)}</p></div><div className="page-actions">{(view === 'calendar' || view === 'requests') && <MonthControls month={month} setMonth={(nextMonth) => { setMonth(nextMonth); setSelectedDay(iso(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1))) }} />}{view === 'requests' && <button className="button button-secondary" title="Очистить фильтры заявок" onClick={() => { setRequesterFilter(''); setFromFilter(''); setToFilter(''); setStatusFilter('all'); setShowCancelled(false) }}><RefreshCw size={15} /> Сбросить фильтры</button>}{(view === 'calendar' || view === 'requests') && canCreateRequest && <button className="button button-primary" title="Создать новую заявку на транспорт" onClick={() => setRequestModal({ open: true })}><Plus size={16} /> Новая заявка</button>}</div></div>
         {error && <div className="message message-error"><AlertCircle size={17} /><span>{error}</span><button onClick={() => setError('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {notice && <div className="message message-success"><CheckCircle2 size={17} /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={15} /></button></div>}
-        {view === 'overview' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} onOpenRequest={(request) => setRequestModal({ open: true, request })} onSelectFilter={(filter) => { setSearch(''); setStatusFilter(filter); setView('requests') }} />}
-        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
-        {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
+        {view === 'overview' && profile.role !== 'customer' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} onOpenRequest={(request) => setRequestModal({ open: true, request })} onSelectFilter={(filter) => { setRequesterFilter(''); setFromFilter(''); setToFilter(''); setStatusFilter(filter); setShowCancelled(filter === 'all' || filter === 'cancelled'); setView('requests') }} />}
+        {view === 'calendar' && <CalendarView month={month} days={calendarDays} requests={ownRequests} allRequests={requests} searchRequests={searchRequests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} reserveSlotLimit={Number(reserveSlotLimit) || 0} showPrevious30Days={showPrevious30Days} setShowPrevious30Days={setShowPrevious30Days} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} onExportCsv={exportSelectedRequestsCsv} onExportRegistries={exportSelectedRegistries} />}
+        {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} requesterFilter={requesterFilter} setRequesterFilter={setRequesterFilter} fromFilter={fromFilter} setFromFilter={setFromFilter} toFilter={toFilter} setToFilter={setToFilter} statusFilter={statusFilter} setStatusFilter={setStatusFilter} showCancelled={showCancelled} setShowCancelled={setShowCancelled} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
         {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
         {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
-        {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} templateName={registryTemplateName} templateUploading={templateUploading} onTemplateUpload={uploadRegistryTemplate} onDownloadTemplate={downloadRegistryTemplate} />}
+        {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} reserveSlotLimit={reserveSlotLimit} setReserveSlotLimit={setReserveSlotLimit} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} templateName={registryTemplateName} templateUploading={templateUploading} onTemplateUpload={uploadRegistryTemplate} onDownloadTemplate={downloadRegistryTemplate} />}
         {view === 'reports' && canViewStaffPages && <ReportsView rows={reportRows} from={reportsFrom} setFrom={setReportsFrom} to={reportsTo} setTo={setReportsTo} loading={reportsLoading} onGenerate={loadReports} />}
         {view === 'history' && canViewStaffPages && <HistoryView rows={auditRows} people={people} hasMore={historyHasMore} loadingMore={historyLoadingMore} onLoadMore={() => loadHistory(true)} search={historySearch} setSearch={setHistorySearch} entity={historyEntity} setEntity={setHistoryEntity} from={historyFrom} setFrom={setHistoryFrom} to={historyTo} setTo={setHistoryTo} onRefresh={loadHistory} />}
         <footer className="app-footer"><span>АКСОН ЛОГИСТИКА</span><span>Портал заказа транспорта · {new Date().getFullYear()}</span></footer>
       </main>
     </div>
     {editingPerson && <UserEditModal person={editingPerson} units={units} draft={userEditDraft} setDraft={setUserEditDraft} onSubmit={saveUserEdit} onClose={() => setEditingPerson(null)} saving={saving} currentUserId={profile.id} />}
-    {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} onUploadRegistry={uploadRequestRegistry} saving={saving} registryTemplateName={registryTemplateName} registryTemplatePath={registryTemplatePath} onDownloadTemplate={downloadRegistryTemplate} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
+    {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} onUploadRegistry={uploadRequestRegistry} saving={saving} registryTemplateName={registryTemplateName} registryTemplatePath={registryTemplatePath} reserveSlotLimit={Number(reserveSlotLimit) || 0} onDownloadTemplate={downloadRegistryTemplate} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
     {loading && <div className="loading-pill"><span className="spinner" /> Обновляем данные…</div>}
   </div>
 }
@@ -651,7 +746,7 @@ function LoginScreen({ login, password, setLogin, setPassword, signIn, busy, err
 
 function getSubtitle(view: View, profile: Profile) {
   if (view === 'overview') return `Здравствуйте, ${profile.username}. Сводная информация по транспортным заявкам.`
-  if (view === 'calendar') return 'Планирование трёх общих транспортных слотов на каждый день.'
+  if (view === 'calendar') return 'Планирование основных и резервных транспортных слотов.'
   if (view === 'reports') return 'Заявки, направления, типы груза и скорость закрытия за выбранный период.'
   if (view === 'requests') return 'Поиск, контроль статусов и работа с заявками за выбранный месяц.'
   if (view === 'users') return 'Создание учётных записей, редактирование ролей и управление доступом.'
@@ -666,201 +761,159 @@ function OverviewView({ profile, requests, occupancy, units, onNavigate, onReque
   onNavigate: (view: View) => void; onRequest: () => void;
   onOpenRequest: (request: TransportRequest) => void; onSelectFilter: (filter: RequestListFilter) => void
 }) {
-  const active = requests.filter((r) => !['cancelled', 'completed'].includes(r.status)).length
+  const periodRequests = requests.filter((r) => r.transport_date >= iso(new Date(today.getFullYear(), today.getMonth(), 1)) && r.transport_date <= iso(new Date(today.getFullYear(), today.getMonth() + 1, 0)))
+  const active = periodRequests.filter((r) => !['cancelled', 'completed'].includes(r.status)).length
   const todayRequests = requests.filter((r) => r.transport_date === iso(today))
-  const todayOccupancy = occupancy.filter((slot) => slot.transport_date === iso(today))
+  const todayOccupancy = occupancy.filter((slot) => slot.transport_date === iso(today) && slot.slot_type === 'main')
   const stats: { label: string; value: number; icon: typeof FileSpreadsheet; tone: string; hint: string; filter: RequestListFilter }[] = [
-    { label: 'Всего заявок', value: requests.length, icon: FileSpreadsheet, tone: 'blue', hint: 'За выбранный месяц · открыть все', filter: 'all' },
+    { label: 'Всего заявок', value: periodRequests.length, icon: FileSpreadsheet, tone: 'blue', hint: 'За текущий месяц · открыть все', filter: 'all' },
     { label: 'В работе', value: active, icon: Activity, tone: 'orange', hint: 'Созданные, в поиске и подтверждённые', filter: 'active' },
-    { label: 'Подтверждено', value: requests.filter((r) => r.status === 'confirmed').length, icon: CheckCircle2, tone: 'green', hint: 'Транспорт назначен', filter: 'confirmed' },
-    { label: 'Выполнено', value: requests.filter((r) => r.status === 'completed').length, icon: Truck, tone: 'violet', hint: 'Завершённые перевозки', filter: 'completed' }
+    { label: 'Подтверждено', value: periodRequests.filter((r) => r.status === 'confirmed').length, icon: CheckCircle2, tone: 'green', hint: 'Транспорт назначен', filter: 'confirmed' },
+    { label: 'Выполнено', value: periodRequests.filter((r) => r.status === 'completed').length, icon: Truck, tone: 'violet', hint: 'Завершённые перевозки', filter: 'completed' },
+    { label: 'Отменены', value: periodRequests.filter((r) => r.status === 'cancelled').length, icon: Ban, tone: 'grey', hint: 'Отменённые заявки', filter: 'cancelled' }
   ]
-  const next = requests.filter((r) => r.transport_date >= iso(today) && !['cancelled', 'completed'].includes(r.status)).sort((a, b) => a.transport_date.localeCompare(b.transport_date) || a.slot_number - b.slot_number).slice(0, 5)
+  const next = requests.filter((r) => r.transport_date >= iso(today) && !['cancelled', 'completed'].includes(r.status)).sort((a, b) => a.transport_date.localeCompare(b.transport_date) || a.slot_type.localeCompare(b.slot_type) || a.slot_number - b.slot_number).slice(0, 5)
   return <div className="overview-page">
     <div className="section-heading overview-section-heading"><div><h2>Показатели за месяц</h2><p>Текущая статистика заявок</p></div><button className="subtle-link" onClick={() => onSelectFilter('all')}>Все заявки <ArrowRight size={15}/></button></div>
     <div className="stats-grid">{stats.map((item) => { const Icon = item.icon; return <button type="button" className="stat-card stat-card-button" key={item.label} onClick={() => onSelectFilter(item.filter)} title={`Открыть заявки: ${item.label.toLowerCase()}`} aria-label={`Открыть заявки: ${item.label}, ${item.value}`}><div className={`stat-icon tone-${item.tone}`}><Icon size={19}/></div><div className="stat-label">{item.label}</div><div className="stat-value">{item.value}</div><div className="stat-hint">{item.hint}</div></button> })}</div>
-    <div className="overview-grid"><section className="surface-card upcoming-card"><div className="card-heading"><div><h3>Ближайшие заявки</h3><p>Предстоящие перевозки</p></div><button className="icon-button" onClick={() => onNavigate('requests')} title="Открыть все заявки"><ArrowUpRight size={17}/></button></div>{next.length ? <div className="upcoming-list">{next.map((r) => <button type="button" className="upcoming-row upcoming-row-button" key={r.id} onClick={() => onOpenRequest(r)} title={`Открыть заявку №${r.request_no}`} aria-label={`Открыть заявку №${r.request_no}, ${dateLabel(r.transport_date)}, ${statusNames[r.status]}`}><div className="upcoming-date"><strong>{new Date(`${r.transport_date}T00:00:00`).getDate()}</strong><span>{new Date(`${r.transport_date}T00:00:00`).toLocaleDateString('ru-RU', { month: 'short' })}</span></div><div className="upcoming-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>Слот {r.slot_number} · {r.capacity_tons} т · №{r.request_no}</small></div><StatusBadge status={r.status}/></button>)}</div> : <EmptyState icon={CalendarDays} title="Предстоящих заявок нет" text="Когда появятся новые перевозки, они отобразятся здесь."/>}</section><section className="surface-card today-card"><div className="card-heading"><div><h3>Сегодня</h3><p>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</p></div><div className="today-count">{todayOccupancy.length} <span>из 3 слотов</span></div></div><div className="today-slot-list">{[1, 2, 3].map((slot) => { const request = todayRequests.find((r) => r.slot_number === slot && r.status !== 'cancelled'); const occupied = todayOccupancy.some((s) => s.slot_number === slot); return <div className="today-slot" key={slot}><div className={`slot-indicator ${occupied ? 'filled' : ''}`}>{slot}</div><div><strong>Слот {slot}</strong><small>{request ? `Заявка №${request.request_no}` : occupied ? 'Занят другой заявкой' : 'Свободен'}</small></div><span className={occupied ? 'slot-state occupied' : 'slot-state free'}>{occupied ? 'Занят' : 'Свободен'}</span></div> })}</div><button className="wide-subtle-button" onClick={() => onNavigate('calendar')}>Перейти к календарю <ArrowRight size={15}/></button></section></div>
+    <div className="overview-grid"><section className="surface-card upcoming-card"><div className="card-heading"><div><h3>Ближайшие заявки</h3><p>Предстоящие перевозки</p></div><button className="icon-button" onClick={() => onNavigate('requests')} title="Открыть все заявки"><ArrowUpRight size={17}/></button></div>{next.length ? <div className="upcoming-list">{next.map((r) => <button type="button" className="upcoming-row upcoming-row-button" key={r.id} onClick={() => onOpenRequest(r)} title={`Открыть заявку №${r.request_no}`} aria-label={`Открыть заявку №${r.request_no}, ${dateLabel(r.transport_date)}, ${statusNames[r.status]}`}><div className="upcoming-date"><strong>{new Date(`${r.transport_date}T00:00:00`).getDate()}</strong><span>{new Date(`${r.transport_date}T00:00:00`).toLocaleDateString('ru-RU', { month: 'short' })}</span></div><div className="upcoming-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>№{r.request_no} · {r.slot_type === 'main' ? 'Основной' : 'Резервный'} слот {r.slot_number} · {r.capacity_tons} т</small></div><StatusBadge status={r.status}/></button>)}</div> : <EmptyState icon={CalendarDays} title="Предстоящих заявок нет" text="Когда появятся новые перевозки, они отобразятся здесь."/>}</section><section className="surface-card today-card"><div className="card-heading"><div><h3>Сегодня</h3><p>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</p></div><div className="today-count">{todayOccupancy.length} <span>из 3 основных</span></div></div><div className="today-slot-list">{[1, 2, 3].map((slot) => { const request = todayRequests.find((r) => r.slot_type === 'main' && r.slot_number === slot && r.status !== 'cancelled'); const occupied = todayOccupancy.some((s) => s.slot_number === slot); return <div className="today-slot" key={slot}><div className={`slot-indicator ${occupied ? 'filled' : ''}`}>{slot}</div><div><strong>Основной слот {slot}</strong><small>{request ? `Заявка №${request.request_no}` : occupied ? 'Занят другой заявкой' : 'Свободен'}</small></div><span className={occupied ? 'slot-state occupied' : 'slot-state free'}>{occupied ? 'Занят' : 'Свободен'}</span></div>})}</div><button className="wide-subtle-button" onClick={() => onNavigate('calendar')}>Перейти к календарю <ArrowRight size={15}/></button></section></div>
     <div className="overview-bottom"><div className="info-mini"><div className="mini-icon"><Building2 size={18}/></div><div><strong>{units.filter((u) => u.kind === 'BE').length} бизнес-единиц</strong><small>В активном справочнике</small></div></div><div className="info-mini"><div className="mini-icon purple"><Warehouse size={18}/></div><div><strong>{units.filter((u) => u.kind === 'RC').length} распределительных центров</strong><small>Доступно для маршрутов</small></div></div><div className="info-mini"><div className="mini-icon green"><ShieldCheck size={18}/></div><div><strong>{roleNames[profile.role]}</strong><small>Ваша роль в системе</small></div></div></div>
-    {profile.role === 'customer' && <button className="floating-create" onClick={onRequest}><Plus size={19}/><span>Создать заявку</span></button>}
   </div>
 }
 
-function CalendarView({ month, days, requests, allRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, minCreateDate, onCreate, onOpen, onCancel, onDownloadRegistry }: {
-  month: Date; days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; slots: CalendarSlot[]; occupancy: SlotOccupancy[];
-  selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[]; minCreateDate: string;
+function CalendarView({ month, days, requests, allRequests, searchRequests, slots, occupancy, selectedDay, setSelectedDay, profile, units, minCreateDate, reserveSlotLimit, showPrevious30Days, setShowPrevious30Days, onCreate, onOpen, onCancel, onDownloadRegistry, onExportCsv, onExportRegistries }: {
+  month: Date; days: Date[]; requests: TransportRequest[]; allRequests: TransportRequest[]; searchRequests: TransportRequest[]; slots: CalendarSlot[]; occupancy: SlotOccupancy[];
+  selectedDay: string; setSelectedDay: (v: string) => void; profile: Profile; units: BusinessUnit[]; minCreateDate: string; reserveSlotLimit: number;
+  showPrevious30Days: boolean; setShowPrevious30Days: (v: boolean) => void;
   onCreate: (slot: number, date: string) => void; onOpen: (request: TransportRequest) => void; onCancel: (request: TransportRequest) => void;
-  onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void
+  onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void;
+  onExportCsv: (dates: string[]) => void; onExportRegistries: (dates: string[]) => void
 }) {
-  const [query, setQuery] = useState('')
+  const [customerFilter, setCustomerFilter] = useState('')
+  const [fromFilter, setFromFilter] = useState('')
+  const [toFilter, setToFilter] = useState('')
   const [cargoFilter, setCargoFilter] = useState('all')
   const [capacityFilter, setCapacityFilter] = useState('all')
+  const [selectedExportDates, setSelectedExportDates] = useState<string[]>([])
+  const [showExportTools, setShowExportTools] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
   const canCreate = profile.role === 'customer' || profile.role === 'dispatcher' || profile.role === 'admin'
   const canOperate = profile.role === 'dispatcher' || profile.role === 'admin'
   const isCustomer = profile.role === 'customer'
-  const normalizedQuery = query.trim().toLowerCase()
+  const filtersActive = !isCustomer && (!!customerFilter.trim() || !!fromFilter.trim() || !!toFilter.trim() || cargoFilter !== 'all' || capacityFilter !== 'all')
 
-  function matchesRequest(request?: TransportRequest) {
-    if (!request) return true
-    const fromUnit = units.find((unit) => unit.id === request.from_unit_id)
-    const toUnit = units.find((unit) => unit.id === request.to_unit_id)
-    const from = request.from_other_address || `${fromUnit?.code || ''} ${fromUnit?.name || ''}`
-    const to = request.to_other_address || `${toUnit?.code || ''} ${toUnit?.name || ''}`
-    const customer = request.profiles?.username || ''
-    const matchesText = !normalizedQuery || `${customer} ${from} ${to} ${request.request_no} ${request.transport_task_number || ''} ${request.request_comment || ''}`.toLowerCase().includes(normalizedQuery)
-    const matchesCargo = cargoFilter === 'all' || (request.request_cargo || []).some((item) => item.cargo_type === cargoFilter)
-    const matchesCapacity = capacityFilter === 'all' || String(request.capacity_tons) === capacityFilter
-    return matchesText && matchesCargo && matchesCapacity
+  function matchesRequest(request: TransportRequest) {
+    const fromUnit = units.find((u) => u.id === request.from_unit_id)
+    const toUnit = units.find((u) => u.id === request.to_unit_id)
+    const fromText = `${fromUnit?.kind === 'BE' ? 'БЕ' : ''} ${fromUnit?.code || ''} ${fromUnit?.name || ''} ${fromUnit?.address || ''} ${request.from_other_address || ''}`.toLowerCase()
+    const toText = `${toUnit ? (toUnit.kind === 'RC' ? 'РЦ' : 'БЕ') : ''} ${toUnit?.code || ''} ${toUnit?.name || ''} ${toUnit?.address || ''} ${request.to_other_address || ''}`.toLowerCase()
+    const customerText = (request.profiles?.username || '').toLowerCase()
+    return matchesAllTerms(customerText, customerFilter)
+      && matchesAllTerms(fromText, fromFilter)
+      && matchesAllTerms(toText, toFilter)
+      && (cargoFilter === 'all' || (request.request_cargo || []).some((c) => c.cargo_type === cargoFilter))
+      && (capacityFilter === 'all' || String(request.capacity_tons) === capacityFilter)
   }
 
-  const filterActive = !!normalizedQuery || cargoFilter !== 'all' || capacityFilter !== 'all'
-  const selectedDateRequests = allRequests.filter((r) => r.transport_date === selectedDay && r.status !== 'cancelled' && matchesRequest(r))
-  const selectedSlotNumbers = filterActive
-    ? selectedDateRequests.map((r) => r.slot_number).sort((a, b) => a - b)
-    : [1, 2, 3]
-  const matchedCount = allRequests.filter((r) => r.status !== 'cancelled' && matchesRequest(r)).length
-  const activeSlotCount = new Set([...slots, ...occupancy].map((slot) => `${slot.transport_date}:${slot.slot_number}`)).size
-  const shortStatus: Record<RequestStatus, string> = { created: 'Создана', search: 'Поиск', confirmed: 'Подтв.', completed: 'Выполнена', cancelled: 'Отменена' }
-
+  const filteredPool = searchRequests.filter((r) => r.status !== 'cancelled' && r.status !== 'completed' && matchesRequest(r))
+    .sort((a, b) => a.transport_date.localeCompare(b.transport_date) || a.slot_type.localeCompare(b.slot_type) || a.slot_number - b.slot_number)
+  const matchedCount = filtersActive ? filteredPool.length : allRequests.filter((r) => r.transport_date === selectedDay && r.status !== 'cancelled').length
+  const selectedDateRequests = filtersActive ? filteredPool.slice(0, 3) : allRequests.filter((r) => r.transport_date === selectedDay && r.status !== 'cancelled').sort((a, b) => a.request_no > b.request_no ? -1 : 1)
+  const previousStart = new Date(days[0]); previousStart.setDate(previousStart.getDate() - 30)
+  const previous30Days = Array.from({ length: 30 }, (_, i) => { const d = new Date(previousStart); d.setDate(previousStart.getDate() + i); return d })
+  const selectedDatesSet = new Set(selectedExportDates)
+  const shortDate = (d: Date) => d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }).replace('.', '')
+  const dayCounts = (dateKey: string) => {
+    const slotRows = slots.filter((r) => r.transport_date === dateKey)
+    const occupancyRows = occupancy.filter((r) => r.transport_date === dateKey)
+    const requestRows = allRequests.filter((r) => r.transport_date === dateKey && r.status !== 'cancelled')
+    const mainSet = new Set<number>()
+    const reserveSet = new Set<number>()
+    ;[...slotRows, ...occupancyRows, ...requestRows].forEach((row) => (row.slot_type === 'main' ? mainSet : reserveSet).add(row.slot_number))
+    return { main: mainSet.size, reserve: reserveSet.size, total: mainSet.size + reserveSet.size, freeMain: Math.max(0, 3 - mainSet.size), freeReserve: Math.max(0, reserveSlotLimit - reserveSet.size) }
+  }
+  const toggleExportDate = (date: string) => setSelectedExportDates((old) => old.includes(date) ? old.filter((d) => d !== date) : [...old, date])
+  const renderDay = (day: Date, outside = false, compact = false) => {
+    const key = iso(day)
+    const counts = dayCounts(key)
+    const unavailable = isCustomer && key < minCreateDate
+    return <article key={key} className={`calendar-day ${compact ? 'calendar-day-compact' : ''} ${outside ? 'outside' : ''} ${selectedDay === key ? 'selected' : ''} ${key === iso(today) ? 'today' : ''} ${unavailable ? 'booking-unavailable' : ''}`}>
+      <div className="calendar-day-top"><button type="button" className="calendar-date-button" onClick={() => setSelectedDay(key)} title={`Показать заявки за ${dateLabel(key)}`}><span className="calendar-date-number">{day.getDate()}</span><span className="calendar-date-month">{shortDate(day)}</span>{counts.total > 0 && <em className="calendar-count-badge">{counts.total}</em>}</button><label className="calendar-export-check" title={`Включить ${dateLabel(key)} в выгрузку`}><input type="checkbox" checked={selectedDatesSet.has(key)} onChange={() => toggleExportDate(key)}/><span/></label></div>
+      <div className="calendar-capacities"><span className="capacity-main" title={`Основные слоты: свободно ${counts.freeMain} из 3`}><Warehouse size={12}/><b>{counts.freeMain}</b></span><span className="capacity-reserve" title={`Резервные слоты: свободно ${counts.freeReserve} из ${reserveSlotLimit}`}><MapPin size={12}/><b>{counts.freeReserve}</b></span></div>
+    </article>
+  }
+  const customerOrDayRequests = selectedDateRequests
+  const resultsTitle = filtersActive ? 'Ближайшие совпадения' : `Заявки за ${dateLabel(selectedDay, { day: 'numeric', month: 'long', year: 'numeric' })}`
   return <div className="calendar-page">
     <section className="surface-card calendar-card">
-      <div className="calendar-toolbar">
-        <div className="calendar-toolbar-copy"><strong>Транспортные слоты</strong><span>Нажмите на дату, чтобы открыть её слоты. Нажмите на занятую заявку, чтобы просмотреть карточку.</span></div>
-        <div className="calendar-toolbar-month">{monthTitle(month)}</div>
-      </div>
-      {!isCustomer && <div className="calendar-filters">
-        <div className="search-field"><Search size={15}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Заказчик, откуда или куда" title="Поиск по заказчику, адресу отправления и адресу назначения"/></div>
-        <select value={cargoFilter} onChange={(e) => setCargoFilter(e.target.value)} title="Отфильтровать заявки по типу груза">
-          <option value="all">Все типы груза</option><option value="goods">Товар</option><option value="equipment">Оборудование</option><option value="packaging">Тара</option>
-        </select>
-        <select value={capacityFilter} onChange={(e) => setCapacityFilter(e.target.value)} title="Отфильтровать заявки по грузоподъёмности">
-          <option value="all">Любой тоннаж</option><option value="1.5">1,5 т</option><option value="5">5 т</option><option value="10">10 т</option><option value="20">20 т</option>
-        </select>
-        {(query || cargoFilter !== 'all' || capacityFilter !== 'all') && <button className="icon-button small" title="Сбросить фильтры календаря" onClick={() => { setQuery(''); setCargoFilter('all'); setCapacityFilter('all') }}><X size={14}/></button>}
+      <div className="calendar-toolbar"><div className="calendar-toolbar-copy"><strong>Календарь транспортных слотов</strong><span>Выберите день, чтобы увидеть заявки. Галочками отметьте дни для выгрузки.</span></div><div className="calendar-toolbar-actions"><button type="button" className={`icon-button ${showPrevious30Days ? 'active' : ''}`} onClick={() => setShowPrevious30Days(!showPrevious30Days)} title={showPrevious30Days ? 'Скрыть предыдущие 30 дней' : 'Показать предыдущие 30 дней'}><CalendarClock size={17}/></button><button type="button" className="icon-button" onClick={() => setShowExportTools(!showExportTools)} title="Показать инструменты выгрузки"><Download size={17}/></button><span className="calendar-toolbar-month">{monthTitle(month)}</span></div></div>
+      {showExportTools && <div className="calendar-export-toolbar"><span>Выбрано дней: <b>{selectedExportDates.length}</b></span><button className="button button-secondary button-compact" disabled={!selectedExportDates.length || exportBusy} onClick={async () => { setExportBusy(true); try { await onExportRegistries(selectedExportDates) } finally { setExportBusy(false) } }}><FileSpreadsheet size={14}/> Объединить реестры</button><button className="button button-secondary button-compact" disabled={!selectedExportDates.length || exportBusy} onClick={() => onExportCsv(selectedExportDates)}><Download size={14}/> Выгрузить список CSV</button><button className="icon-button small" onClick={() => setSelectedExportDates([])} title="Снять отметки со всех дат"><X size={14}/></button></div>}
+      {!isCustomer && <div className="calendar-filters calendar-filters-split">
+        <label><span>Заказчик</span><input value={customerFilter} onChange={(e) => setCustomerFilter(e.target.value)} placeholder="Логин заказчика"/></label>
+        <label><span>Откуда</span><input value={fromFilter} onChange={(e) => setFromFilter(e.target.value)} placeholder="БЕ или адрес отправления"/></label>
+        <label><span>Куда</span><input value={toFilter} onChange={(e) => setToFilter(e.target.value)} placeholder="РЦ или адрес назначения"/></label>
+        <select value={cargoFilter} onChange={(e) => setCargoFilter(e.target.value)} title="Фильтр по типу груза"><option value="all">Все типы груза</option><option value="goods">Товар</option><option value="equipment">Оборудование</option><option value="packaging">Тара</option></select>
+        <select value={capacityFilter} onChange={(e) => setCapacityFilter(e.target.value)} title="Фильтр по грузоподъёмности"><option value="all">Любой тоннаж</option><option value="1.5">1,5 т</option><option value="5">5 т</option><option value="10">10 т</option><option value="20">20 т</option></select>
+        {filtersActive && <button className="icon-button small" title="Сбросить фильтры календаря" onClick={() => { setCustomerFilter(''); setFromFilter(''); setToFilter(''); setCargoFilter('all'); setCapacityFilter('all') }}><X size={14}/></button>}
         <span className="calendar-filter-count">Совпадений: <b>{matchedCount}</b></span>
       </div>}
-      <div className="calendar-legend">
-        <span><i className="legend-dot available"/> Свободный слот</span>
-        <span><i className="legend-dot created"/> Создана</span>
-        <span><i className="legend-dot booked"/> В обработке / закрыта</span>
-        <span className="slots-note">3 слота на каждый день</span>
-      </div>
-      <div className="calendar-weekdays">{['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'].map((d) => <div key={d}>{d}</div>)}</div>
-      <div className="calendar-grid">
-        {days.map((day) => {
-          const key = iso(day)
-          const inMonth = day.getMonth() === month.getMonth()
-          const dateRequests = allRequests.filter((r) => r.transport_date === key && r.status !== 'cancelled')
-          const dateSlots = slots.filter((r) => r.transport_date === key)
-          const occupied = new Set([...dateSlots.map((r) => r.slot_number), ...dateRequests.map((r) => r.slot_number), ...occupancy.filter((r) => r.transport_date === key).map((r) => r.slot_number)])
-          const isToday = key === iso(today)
-          const unavailableForCustomer = isCustomer && key < minCreateDate
-          if (!inMonth) return <article key={key} className="calendar-day outside" aria-hidden="true">
-            <div className="calendar-date-button calendar-date-muted"><span className="calendar-date-number">{day.getDate()}</span><span className="calendar-date-month">{day.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '')}</span></div>
-            <div className="day-slots day-slots-muted"><span/><span/><span/></div>
-          </article>
-          return <article key={key} className={`calendar-day ${selectedDay === key ? 'selected' : ''} ${isToday ? 'today' : ''} ${unavailableForCustomer ? 'booking-unavailable' : ''}`}>
-            <button type="button" className="calendar-date-button" onClick={() => setSelectedDay(key)} title={unavailableForCustomer ? `Создание недоступно до ${dateLabel(minCreateDate)}. Можно просматривать занятость.` : `Показать слоты на ${dateLabel(key)}`}>
-              <span className="calendar-date-number">{day.getDate()}</span>
-              <span className="calendar-date-month">{day.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '')}</span>
-              {occupied.size > 0 && <em>{occupied.size}/3</em>}
-            </button>
-            <div className="day-slots">
-              {[1, 2, 3].map((slotNo) => {
-                const request = dateRequests.find((r) => r.slot_number === slotNo)
-                const summary = dateSlots.find((r) => r.slot_number === slotNo)
-                const busyFallback = occupancy.some((r) => r.transport_date === key && r.slot_number === slotNo)
-                const busy = !!request || !!summary || busyFallback
-                const matches = !request || matchesRequest(request)
-                if (!busy) return <button key={slotNo} type="button" className={`day-slot free ${unavailableForCustomer ? 'booking-disabled' : ''}`} disabled={isCustomer && unavailableForCustomer} title={unavailableForCustomer ? `Запись доступна с ${dateLabel(minCreateDate)}` : canCreate ? `Создать заявку · слот ${slotNo}` : `Свободный слот ${slotNo}`} onClick={() => { setSelectedDay(key); if (canCreate && key >= minCreateDate) onCreate(slotNo, key) }}>+</button>
-                const status = request?.status || summary?.status
-                const beCode = summary?.from_be_code || (request ? resolveUnit(units, request.from_unit_id, request.from_other_address) : 'Занято')
-                const customerCanOpen = !isCustomer || request?.requester_id === profile.id
-                return <button key={slotNo} type="button" className={`day-slot occupied ${status ? statusClasses[status] : 'status-search'} ${matches ? '' : 'filtered-out'}`} title={request ? `Слот ${slotNo} · ${beCode} · ${statusNames[request.status]} · заявка №${request.request_no}` : `Слот ${slotNo} · ${beCode} · ${status ? statusNames[status] : 'Занято'}`} onClick={() => { setSelectedDay(key); if (request && customerCanOpen) onOpen(request) }}>
-                  <b>{beCode}</b><small>{status ? shortStatus[status] : 'Занято'}</small>
-                </button>
-              })}
-            </div>
-          </article>
-        })}
-      </div>
-      <div className="calendar-foot"><span><span className="online-dot"/> Занято слотов: {activeSlotCount}</span><span>Цвет слота показывает его статус, код — БЕ отправления</span></div>
+      <div className="calendar-legend"><span><Warehouse size={13}/> Основные — направление в РЦ</span><span><MapPin size={13}/> Резервные — другие адреса</span><span className="slots-note">Основных слотов: 3 · резервных: {reserveSlotLimit}</span></div>
+      {showPrevious30Days && <><div className="calendar-period-caption">Предыдущие 30 дней</div><div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div><div className="calendar-grid calendar-previous-grid">{Array.from({ length: (previousStart.getDay() + 6) % 7 }, (_, i) => <span key={`pad-${i}`} className="calendar-grid-pad"/>)}{previous30Days.map((day) => renderDay(day, true, true))}</div></>}
+      <div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div>
+      <div className="calendar-grid">{days.map((day) => renderDay(day, day.getMonth() !== month.getMonth()))}</div>
+      <div className="calendar-foot"><span><span className="online-dot"/> Заявок за выбранный период: {allRequests.filter((r) => r.status !== 'cancelled').length}</span><span>Красный индикатор показывает число занятых слотов. Синие пиктограммы — основные, фиолетовые — резервные.</span></div>
     </section>
-
     <section className="surface-card selected-day-card">
-      <div className="card-heading"><div><h3>{dateLabel(selectedDay, { day: 'numeric', month: 'long', year: 'numeric' })}</h3><p>{filterActive ? 'Заявки, соответствующие фильтрам' : 'Три транспортных слота на выбранную дату'}</p></div><div className="day-count">{selectedDateRequests.length}<small>заявок</small></div></div>
-      <div className="selected-slots">
-        {selectedSlotNumbers.length ? selectedSlotNumbers.map((slotNo) => {
-          const request = allRequests.find((r) => r.transport_date === selectedDay && r.slot_number === slotNo && r.status !== 'cancelled' && matchesRequest(r))
-          const summary = slots.find((r) => r.transport_date === selectedDay && r.slot_number === slotNo)
-          const isBusy = !!request || !!summary || occupancy.some((x) => x.transport_date === selectedDay && x.slot_number === slotNo)
-          const isOwn = request?.requester_id === profile.id
-          const canOpen = !!request && (!isCustomer || isOwn)
-          const canEditRequest = !!request && (canOperate || (isCustomer && isOwn && request.status === 'created'))
-          return <div key={slotNo} className={`selected-slot ${isBusy ? 'has-request' : 'empty-slot'}`}>
-            <div className="selected-slot-number">{slotNo}</div>
-            {request ? <>
-              <div className="selected-slot-info">
-                <strong><span>{resolveUnit(units, request.from_unit_id, request.from_other_address)}</span><ArrowRight size={13}/><span>{resolveUnit(units, request.to_unit_id, request.to_other_address)}</span></strong>
-                <small>БЕ отправления: {resolveUnit(units, request.from_unit_id, request.from_other_address)} · №{request.request_no} · {request.capacity_tons} т{!isCustomer ? ` · ${request.profiles?.username || 'Заказчик'}` : ''}</small>
-              </div>
-              <div className="selected-slot-actions"><StatusBadge status={request.status}/>
-                {canOpen && <button className="icon-button small" onClick={() => onOpen(request)} title="Открыть заявку для просмотра"><Eye size={14}/></button>}
-                {request.registry_file_path && (!isCustomer || isOwn) && <button className="icon-button small" onClick={() => onDownloadRegistry(request.registry_file_path, request.registry_file_name)} title={`Скачать реестр: ${request.registry_file_name || 'вложение'}`}><Download size={14}/></button>}
-                {isCustomer && isOwn && request.status === 'created' && <button className="icon-button small danger-icon" onClick={() => onCancel(request)} title="Отменить собственную заявку"><Ban size={14}/></button>}
-              </div>
-            </> : summary ? <>
-              <div className="selected-slot-info"><strong>БЕ отправления: {summary.from_be_code}</strong><small>Статус заявки: {statusNames[summary.status]} · детали доступны по вашей роли</small></div>
-              <StatusBadge status={summary.status}/>
-            </> : isBusy ? <>
-              <div className="selected-slot-info"><strong>Слот занят</strong><small>Сводные данные временно недоступны</small></div>
-            </> : <>
-              <div className="selected-slot-info"><strong>Свободный слот</strong><small>На эту дату нет активной заявки</small></div>
-              {canCreate && selectedDay >= minCreateDate && <button className="button button-outline button-compact" onClick={() => onCreate(slotNo, selectedDay)} title="Создать заявку в этом слоте"><Plus size={14}/> Заявка</button>}
-            </>}
-          </div>
-        }) : <div className="empty-filter-result"><Search size={17}/> По выбранным фильтрам на эту дату заявки не найдены.</div>}
+      <div className="card-heading"><div><h3>{resultsTitle}</h3><p>{filtersActive ? 'Фильтр не привязан к выбранному дню · горизонт 3 месяца' : isCustomer ? 'Ваши заявки на выбранную дату' : 'Заявки всех пользователей на выбранную дату'}</p></div><div className="day-count">{customerOrDayRequests.length}<small>{filtersActive ? 'из найденных' : 'заявок'}</small></div></div>
+      <div className="selected-slots selected-request-list">
+        {customerOrDayRequests.length ? customerOrDayRequests.map((request) => {
+          const own = request.requester_id === profile.id
+          const canOpen = !isCustomer || own
+          const originUnit = units.find((u) => u.id === request.from_unit_id)
+          const destUnit = units.find((u) => u.id === request.to_unit_id)
+          return <article className="selected-request-card" key={request.id}><div className="selected-request-top"><strong>Заявка №{request.request_no}</strong><StatusBadge status={request.status}/></div><button type="button" className="selected-request-route" disabled={!canOpen} onClick={() => canOpen && onOpen(request)}><span>{resolveUnit(units, request.from_unit_id, request.from_other_address)}</span><ArrowRight size={13}/><span>{resolveUnit(units, request.to_unit_id, request.to_other_address)}</span></button><div className="selected-request-addresses"><small>Адрес отправления: {request.from_unit_id ? originUnit?.address || 'Не указан в справочнике' : request.from_other_address || '—'}</small><small>Адрес назначения: {request.to_unit_id ? destUnit?.address || 'Не указан в справочнике' : request.to_other_address || '—'}</small></div><div className="selected-request-meta"><span>{dateLabel(request.transport_date, { day: 'numeric', month: 'short' })}</span><span>{request.slot_type === 'main' ? <Warehouse size={12}/> : <MapPin size={12}/>} {request.slot_type === 'main' ? 'Основной' : 'Резервный'} слот {request.slot_number}</span><span>{request.capacity_tons} т</span>{!isCustomer && <span>{request.profiles?.username || 'Заказчик'}</span>}</div><div className="selected-request-actions">{canOpen && <button className="icon-button small" onClick={() => onOpen(request)} title="Открыть заявку"><Eye size={14}/></button>}{request.registry_file_path && (!isCustomer || own) && <button className="icon-button small" onClick={() => onDownloadRegistry(request.registry_file_path, request.registry_file_name)} title="Скачать вложенный реестр"><Download size={14}/></button>}{isCustomer && own && request.status === 'created' && <button className="icon-button small danger-icon" onClick={() => onCancel(request)} title="Отменить заявку"><Ban size={14}/></button>}</div></article>
+        }) : <div className="selected-day-empty"><CalendarDays size={24}/><strong>{filtersActive ? 'Совпадений не найдено' : 'На выбранный день заявок нет'}</strong><span>{filtersActive ? 'Измените параметры фильтра.' : (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 ? 'Можно создать новую заявку на этот день.' : 'Свободных основных и резервных слотов на этот день нет.'}</span>{!filtersActive && canCreate && selectedDay >= minCreateDate && (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 && <button className="button button-primary button-compact" onClick={() => onCreate(1, selectedDay)}><Plus size={14}/> Создать заявку</button>}</div>}
       </div>
-      <div className="selected-day-tip"><CircleHelp size={15}/>{profile.role === 'customer' ? `Вы видите статусы и БЕ отправления всех занятых слотов, подробности — только собственных заявок. Создание доступно с ${dateLabel(minCreateDate)}; отмена — пока статус «Создана».` : profile.role === 'admin' ? 'Администратор может создавать заявки от имени любого заказчика и редактировать все заявки.' : profile.role === 'dispatcher' ? 'Диспетчер может создавать и редактировать заявки, менять статусы и просматривать историю.' : 'УТЗ доступен просмотр всех заявок и календаря, без изменения данных и статусов.'}</div>
+      {!filtersActive && selectedDateRequests.length > 0 && canCreate && selectedDay >= minCreateDate && (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 && <button className="button button-outline button-compact selected-day-create" onClick={() => onCreate(1, selectedDay)}><Plus size={14}/> Добавить заявку на этот день</button>}
+      <div className="selected-day-tip"><CircleHelp size={15}/>{isCustomer ? `Отображаются только ваши заявки. Адреса выбранных БЕ и РЦ берутся из справочника. Создание доступно с ${dateLabel(minCreateDate)}.` : filtersActive ? 'Поиск по заказчику, отправлению и назначению охватывает ближайшие три отчётных месяца. Завершённые и отменённые заявки не показываются.' : 'Для каждого дня свободные основные и резервные слоты рассчитываются независимо.'}</div>
     </section>
   </div>
 }
 
-function RequestsView({ requests, units, profile, search, setSearch, statusFilter, setStatusFilter, onStatus, onEdit, onCancel, onDownloadRegistry }: {
-  requests: TransportRequest[]; units: BusinessUnit[]; profile: Profile; search: string; setSearch: (v: string) => void;
-  statusFilter: RequestListFilter; setStatusFilter: (v: RequestListFilter) => void;
+function RequestsView({ requests, units, profile, requesterFilter, setRequesterFilter, fromFilter, setFromFilter, toFilter, setToFilter, statusFilter, setStatusFilter, showCancelled, setShowCancelled, onStatus, onEdit, onCancel, onDownloadRegistry }: {
+  requests: TransportRequest[]; units: BusinessUnit[]; profile: Profile; requesterFilter: string; setRequesterFilter: (v: string) => void;
+  fromFilter: string; setFromFilter: (v: string) => void; toFilter: string; setToFilter: (v: string) => void;
+  statusFilter: RequestListFilter; setStatusFilter: (v: RequestListFilter) => void; showCancelled: boolean; setShowCancelled: (v: boolean) => void;
   onStatus: (r: TransportRequest, s: RequestStatus) => void; onEdit: (r: TransportRequest) => void; onCancel: (r: TransportRequest) => void;
   onDownloadRegistry: (path: string | null | undefined, name?: string | null) => void
 }) {
   const canChangeStatuses = profile.role === 'dispatcher' || profile.role === 'admin'
   const isCustomer = profile.role === 'customer'
   function exportCsv() {
-    const headers = ['Номер заявки', 'Номер задания на перевозку', 'Комментарий', 'Дата', 'Слот', 'БЕ', 'Откуда', 'Куда', 'Заказчик', 'Грузоподъёмность, т', 'Погрузка', 'Груз', 'Грузомест оборудования, паллетомест', 'Реестр', 'Статус']
-    const rows = requests.map((r) => [r.request_no, r.transport_task_number || '', r.request_comment || '', r.transport_date, r.slot_number, r.business_units?.code || '', resolveUnit(units, r.from_unit_id, r.from_other_address), resolveUnit(units, r.to_unit_id, r.to_other_address), r.profiles?.username || '', r.capacity_tons, r.loading_type === 'rear' ? 'Задняя' : 'Боковая', (r.request_cargo || []).map((c) => cargoNames[c.cargo_type] || c.cargo_type).join('; '), r.request_cargo?.find((c) => c.cargo_type === 'equipment')?.equipment_pallet_places || '', r.registry_file_name || '', statusNames[r.status]])
+    const headers = ['Номер заявки', 'Номер задания на перевозку', 'Комментарий', 'Дата', 'Тип слота', 'Слот', 'БЕ', 'Откуда', 'Адрес отправления', 'Куда', 'Адрес назначения', 'Заказчик', 'Грузоподъёмность, т', 'Погрузка', 'Груз', 'Реестр', 'Статус']
+    const rows = requests.map((r) => {
+      const fromUnit = units.find((u) => u.id === r.from_unit_id); const toUnit = units.find((u) => u.id === r.to_unit_id)
+      return [r.request_no, r.transport_task_number || '', r.request_comment || '', r.transport_date, r.slot_type === 'main' ? 'Основной' : 'Резервный', r.slot_number, r.business_units?.code || '', resolveUnit(units, r.from_unit_id, r.from_other_address), r.from_unit_id ? fromUnit?.address || '' : r.from_other_address || '', resolveUnit(units, r.to_unit_id, r.to_other_address), r.to_unit_id ? toUnit?.address || '' : r.to_other_address || '', r.profiles?.username || '', r.capacity_tons, r.loading_type === 'rear' ? 'Задняя' : 'Боковая', (r.request_cargo || []).map((c) => cargoNames[c.cargo_type] || c.cargo_type).join('; '), r.registry_file_name || '', statusNames[r.status]]
+    })
     const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
     const csv = '\uFEFF' + [headers, ...rows].map((row) => row.map(escape).join(';')).join('\r\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
     const link = document.createElement('a'); link.href = url; link.download = `akson-transport-requests-${iso(today)}.csv`; link.click(); URL.revokeObjectURL(url)
   }
   return <div className="requests-page">
-    <section className="surface-card filters-card">
-      <div className="search-field"><Search size={17}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по номеру, маршруту или логину" title="Номер заявки, маршрут или логин заказчика"/></div>
+    <section className="surface-card filters-card filters-card-split">
+      <label className="request-filter-field"><span>Заказчик</span><div className="search-field"><Search size={15}/><input value={requesterFilter} onChange={(e) => setRequesterFilter(e.target.value)} placeholder="Логин заказчика"/></div></label>
+      <label className="request-filter-field"><span>Откуда</span><div className="search-field"><Search size={15}/><input value={fromFilter} onChange={(e) => setFromFilter(e.target.value)} placeholder="БЕ или адрес отправления"/></div></label>
+      <label className="request-filter-field"><span>Куда</span><div className="search-field"><Search size={15}/><input value={toFilter} onChange={(e) => setToFilter(e.target.value)} placeholder="РЦ или адрес назначения"/></div></label>
       <div className="filter-select"><Filter size={16}/><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as RequestListFilter)} title="Отобрать заявки по статусу"><option value="all">Все статусы</option><option value="active">В работе</option>{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
+      <label className="cancelled-toggle" title="Показывать или скрывать отменённые заявки"><input type="checkbox" checked={showCancelled || statusFilter === 'cancelled'} onChange={(e) => { setShowCancelled(e.target.checked); if (!e.target.checked && statusFilter === 'cancelled') setStatusFilter('all') }} disabled={statusFilter === 'cancelled'}/><Ban size={15}/> <span>Показать отменённые</span></label>
       <span className="results-count">Найдено: <strong>{requests.length}</strong></span>
       <button className="button button-secondary button-compact" onClick={exportCsv} disabled={!requests.length} title="Выгрузить отображаемые заявки в CSV"><FileSpreadsheet size={14}/> Выгрузить CSV</button>
     </section>
-    {requests.length ? <section className="surface-card table-card"><div className="table-scroll"><table className="requests-table"><thead><tr><th>Заявка</th><th>Дата / слот</th><th>Маршрут</th><th>Заказчик</th><th>Параметры</th><th>Статус</th><th>Действия</th></tr></thead><tbody>{requests.map((r) => <tr key={r.id}>
-      <td><strong className="request-number">№{r.request_no}</strong><small>Транспорт</small></td>
-      <td><strong>{dateLabel(r.transport_date, { day: 'numeric', month: 'short' })}</strong><small>Слот {r.slot_number}</small></td>
-      <td><div className="table-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)}</strong><ArrowRight size={13}/><strong>{resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong></div><small>{r.business_units?.code || 'БЕ'}</small></td>
-      <td><strong>{r.profiles?.username || profile.username}</strong><small>{roleNames.customer}</small></td>
-      <td><strong>{r.capacity_tons} т</strong><small>{(r.request_cargo || []).map((c) => c.cargo_type === 'equipment' && c.equipment_pallet_places > 0 ? `${cargoNames[c.cargo_type]}: ${c.equipment_pallet_places} паллетомест` : cargoNames[c.cargo_type]).join(', ') || (r.loading_type === 'rear' ? 'Задняя' : 'Боковая')}{r.transport_task_number ? ` · Задание ${r.transport_task_number}` : ''}</small>{r.request_comment && <small title={r.request_comment}>{r.request_comment}</small>}</td>
-      <td>{canChangeStatuses ? <select className={`status-select ${statusClasses[r.status]}`} value={r.status} onChange={(e) => onStatus(r, e.target.value as RequestStatus)} title="Изменить статус заявки">{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select> : <StatusBadge status={r.status}/>}</td>
-      <td><div className="row-actions">
-        <button className="icon-button small" onClick={() => onEdit(r)} title="Открыть заявку для просмотра и редактирования по правам роли"><Eye size={14}/></button>
-        {r.registry_file_path && <button className="icon-button small" onClick={() => onDownloadRegistry(r.registry_file_path, r.registry_file_name)} title={`Скачать реестр: ${r.registry_file_name || 'вложение'}`}><Download size={14}/></button>}
-        {(canChangeStatuses && r.status !== 'cancelled' || isCustomer && r.status === 'created') && <button className="icon-button small danger-icon" onClick={() => onCancel(r)} title="Отменить заявку"><Ban size={14}/></button>}
-      </div></td>
-    </tr>)}</tbody></table></div></section> : <section className="surface-card empty-large"><EmptyState icon={Search} title="Заявки не найдены" text="Измените параметры поиска или выберите другой статус."/></section>}
+    {requests.length ? <section className="surface-card table-card"><div className="table-scroll"><table className="requests-table"><thead><tr><th>Заявка</th><th>Дата / слот</th><th>Маршрут</th><th>Заказчик</th><th>Параметры</th><th>Статус</th><th>Действия</th></tr></thead><tbody>{requests.map((r) => {
+      const fromUnit = units.find((u) => u.id === r.from_unit_id); const toUnit = units.find((u) => u.id === r.to_unit_id)
+      return <tr key={r.id}><td><strong className="request-number">№{r.request_no}</strong><small>Транспорт</small></td><td><strong>{dateLabel(r.transport_date, { day: 'numeric', month: 'short' })}</strong><small>{r.slot_type === 'main' ? 'Основной' : 'Резервный'} слот {r.slot_number}</small></td><td><div className="table-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)}</strong><ArrowRight size={13}/><strong>{resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong></div><small>{r.business_units?.code || 'БЕ'}</small><small>Откуда: {r.from_unit_id ? fromUnit?.address || 'Адрес не указан' : r.from_other_address || '—'}</small><small>Куда: {r.to_unit_id ? toUnit?.address || 'Адрес не указан' : r.to_other_address || '—'}</small></td><td><strong>{r.profiles?.username || profile.username}</strong><small>{roleNames.customer}</small></td><td><strong>{r.capacity_tons} т</strong><small>{(r.request_cargo || []).map((c) => c.cargo_type === 'equipment' && c.equipment_pallet_places > 0 ? `${cargoNames[c.cargo_type]}: ${c.equipment_pallet_places} паллетомест` : cargoNames[c.cargo_type]).join(', ') || (r.loading_type === 'rear' ? 'Задняя' : 'Боковая')}{r.transport_task_number ? ` · Задание ${r.transport_task_number}` : ''}</small>{r.request_comment && <small title={r.request_comment}>{r.request_comment}</small>}</td><td>{canChangeStatuses ? <select className={`status-select ${statusClasses[r.status]}`} value={r.status} onChange={(e) => onStatus(r, e.target.value as RequestStatus)} title="Изменить статус заявки">{Object.entries(statusNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select> : <StatusBadge status={r.status}/>}</td><td><div className="row-actions"><button className="icon-button small" onClick={() => onEdit(r)} title="Открыть заявку для просмотра и редактирования по правам роли"><Eye size={14}/></button>{r.registry_file_path && <button className="icon-button small" onClick={() => onDownloadRegistry(r.registry_file_path, r.registry_file_name)} title={`Скачать реестр: ${r.registry_file_name || 'вложение'}`}><Download size={14}/></button>}{(canChangeStatuses && r.status !== 'cancelled' || isCustomer && r.status === 'created') && <button className="icon-button small danger-icon" onClick={() => onCancel(r)} title="Отменить заявку"><Ban size={14}/></button>}</div></td></tr>
+    })}</tbody></table></div></section> : <section className="surface-card empty-large"><EmptyState icon={Search} title="Заявки не найдены" text="Измените параметры фильтра или выберите другой статус."/></section>}
   </div>
 }
 
@@ -942,8 +995,8 @@ function DirectoryView({ units, formOpen, setFormOpen, draft, setDraft, onSubmit
   </div>
 }
 
-function SettingsView({ bookingAdvanceDays, setBookingAdvanceDays, roleLimits, setRoleLimits, onSubmit, saving, templateName, templateUploading, onTemplateUpload, onDownloadTemplate }: {
-  bookingAdvanceDays: string; setBookingAdvanceDays: (v: string) => void; roleLimits: RoleLimitValues;
+function SettingsView({ bookingAdvanceDays, setBookingAdvanceDays, reserveSlotLimit, setReserveSlotLimit, roleLimits, setRoleLimits, onSubmit, saving, templateName, templateUploading, onTemplateUpload, onDownloadTemplate }: {
+  bookingAdvanceDays: string; setBookingAdvanceDays: (v: string) => void; reserveSlotLimit: string; setReserveSlotLimit: (v: string) => void; roleLimits: RoleLimitValues;
   setRoleLimits: (v: RoleLimitValues) => void; onSubmit: (e: FormEvent) => void; saving: boolean;
   templateName: string | null; templateUploading: boolean; onTemplateUpload: (e: ChangeEvent<HTMLInputElement>) => void; onDownloadTemplate: () => void
 }) {
@@ -956,6 +1009,10 @@ function SettingsView({ bookingAdvanceDays, setBookingAdvanceDays, roleLimits, s
       <section className="surface-card settings-card"><div className="card-heading"><div><h3>Срок предварительной записи</h3><p>Минимальное количество дней между текущей датой и датой перевозки.</p></div><div className="directory-icon rc"><Clock3 size={18}/></div></div>
         <label className="advance-setting"><span><strong>Запись доступна за</strong><small>0 — день в день; 1 — только с завтрашнего дня; 2 — за два дня и т.д.</small></span><span className="settings-number"><input type="number" min="0" max="365" step="1" value={bookingAdvanceDays} onChange={(e) => setBookingAdvanceDays(e.target.value)}/><small>дней</small></span></label>
         <div className="settings-example"><strong>Текущая настройка:</strong> {Number(bookingAdvanceDays) === 0 ? 'заявку можно оформить на сегодня.' : `заявку можно оформить не ранее чем за ${bookingAdvanceDays} дн. до даты перевозки.`}</div>
+      </section>
+      <section className="surface-card settings-card reserve-slot-setting-card"><div className="card-heading"><div><h3>Резервные транспортные слоты</h3><p>Основной пул всегда содержит 3 слота и используется для направлений в РЦ. Резервный пул применяется для доставки на БЕ и другие адреса и не пересекается с основными слотами.</p></div><div className="directory-icon rc"><MapPin size={18}/></div></div>
+        <label className="advance-setting"><span><strong>Количество резервных слотов в день</strong><small>0 — резервная запись отключена; допускается от 0 до 20 резервных слотов.</small></span><span className="settings-number"><input type="number" min="0" max="20" step="1" value={reserveSlotLimit} onChange={(e) => setReserveSlotLimit(e.target.value)}/><small>слотов / день</small></span></label>
+        <div className="settings-example"><strong>Правило назначения:</strong> получатель — РЦ из справочника: основной слот; БЕ, другой адрес или адрес вручную: резервный слот.</div>
       </section>
       <section className="surface-card settings-card registry-template-card">
         <div className="card-heading"><div><h3>Шаблон реестра</h3><p>Файл, который заказчики смогут скачать в форме заявки и заполнить перед прикреплением к перевозке.</p></div><div className="directory-icon be"><FileText size={18}/></div></div>
@@ -1069,8 +1126,8 @@ function HistoryView({ rows, people, hasMore, loadingMore, onLoadMore, search, s
   </div>
 }
 
-function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, request, slot, initialDate, onClose, onSave, onUploadRegistry, saving, registryTemplateName, registryTemplatePath, onDownloadTemplate, onDownloadRegistry }: {
-  units: BusinessUnit[]; people: Profile[]; profile: Profile; occupancy: SlotOccupancy[]; bookingAdvanceDays: number; request?: TransportRequest; slot?: number; initialDate?: string;
+function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, reserveSlotLimit, request, slot, initialDate, onClose, onSave, onUploadRegistry, saving, registryTemplateName, registryTemplatePath, onDownloadTemplate, onDownloadRegistry }: {
+  units: BusinessUnit[]; people: Profile[]; profile: Profile; occupancy: SlotOccupancy[]; bookingAdvanceDays: number; reserveSlotLimit: number; request?: TransportRequest; slot?: number; initialDate?: string;
   onClose: () => void; onSave: (payload: RequestDraft, request?: TransportRequest) => Promise<void>;
   onUploadRegistry: (request: TransportRequest, file: File) => Promise<{ path: string; name: string }>;
   saving: boolean; registryTemplateName: string | null; registryTemplatePath: string | null; onDownloadTemplate: () => void;
@@ -1096,9 +1153,9 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const minimumDate = iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (isStaff ? 0 : bookingAdvanceDays)))
   const [date, setDate] = useState(request?.transport_date || (initialDate && initialDate >= minimumDate ? initialDate : minimumDate))
   const [slotNo, setSlotNo] = useState(request?.slot_number || slot || 1)
-  const [from, setFrom] = useState(request?.from_unit_id || (initialRequester?.default_from_id || initialRequester?.business_unit_id || ''))
+  const [from, setFrom] = useState(request ? (request.from_unit_id || (request.from_other_address ? 'other' : '')) : (initialRequester?.default_from_id || initialRequester?.business_unit_id || ''))
   const [fromOther, setFromOther] = useState(request?.from_other_address || '')
-  const [to, setTo] = useState(request?.to_unit_id || '')
+  const [to, setTo] = useState(request ? (request.to_unit_id || (request.to_other_address ? 'other' : '')) : '')
   const [toOther, setToOther] = useState(request?.to_other_address || '')
   const [capacity, setCapacity] = useState(String(request?.capacity_tons || '5'))
   const [loadingType, setLoadingType] = useState<'rear' | 'side'>(request?.loading_type || 'rear')
@@ -1122,7 +1179,28 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const registryOnlyMode = !!request && profile.role === 'customer' && request.status !== 'created'
   const be = units.filter((u) => u.kind === 'BE' && (u.is_active || u.id === request?.from_unit_id))
   const destinations = units.filter((u) => u.is_active || u.id === request?.to_unit_id)
-  const occupied = occupancy.some((r) => r.transport_date === date && r.slot_number === slotNo && !(request?.transport_date === date && request.slot_number === slotNo))
+  const fromUnitSelected = units.find((u) => u.id === from)
+  const toUnitSelected = units.find((u) => u.id === to)
+  const targetSlotType: 'main' | 'reserve' = to !== 'other' && toUnitSelected?.kind === 'RC' ? 'main' : 'reserve'
+  const targetSlotLimit = targetSlotType === 'main' ? 3 : reserveSlotLimit
+  const sameOriginalDestination = !!request && (request.to_unit_id
+    ? to === request.to_unit_id
+    : to === 'other' && toOther.trim() === (request.to_other_address || '').trim())
+  const preservesExistingAllocation = !!request
+    && request.status !== 'cancelled'
+    && request.transport_date === date
+    && request.slot_type === targetSlotType
+    && request.slot_number === slotNo
+    && sameOriginalDestination
+  const slotIsOccupied = (candidate: number) => occupancy.some((r) => r.transport_date === date && r.slot_number === candidate && r.slot_type === targetSlotType && !(request?.transport_date === date && request.slot_number === candidate && request.slot_type === targetSlotType))
+  useEffect(() => {
+    if (preservesExistingAllocation) return
+    const currentIsFree = slotNo <= targetSlotLimit && !slotIsOccupied(slotNo)
+    if (currentIsFree || targetSlotLimit < 1) return
+    const nextFree = Array.from({ length: targetSlotLimit }, (_, i) => i + 1).find((candidate) => !slotIsOccupied(candidate))
+    if (nextFree) setSlotNo(nextFree)
+  }, [date, targetSlotType, targetSlotLimit, occupancy, request?.id, request?.to_unit_id, request?.to_other_address, slotNo, to, toOther, preservesExistingAllocation])
+  const occupied = slotIsOccupied(slotNo)
 
   function toggleCargo(value: string) { setCargo((old) => old.includes(value) ? old.filter((x) => x !== value) : [...old, value]) }
 
@@ -1143,7 +1221,9 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
       if (canChooseRequester && !requesterId) throw new Error('Выберите заказчика.')
       if (isStaff && date < iso(today)) throw new Error('Создавать и переносить заявки на прошедшую дату нельзя. Для сотрудников минимальная дата — сегодня.')
       if (!isStaff && (!request || date !== request.transport_date) && date < minimumDate) throw new Error(`Дата перевозки должна быть не ранее ${dateLabel(minimumDate)}.`)
-      if (!from || !to || (from === 'other' && !fromOther.trim()) || (to === 'other' && !toOther.trim())) throw new Error('Заполните маршрут перевозки.')
+      if (!from || (from === 'other' ? !fromOther.trim() : !units.some((u) => u.id === from && u.kind === 'BE')) ) throw new Error('Для поля «Откуда» выберите БЕ из списка или «Другой адрес» и укажите адрес вручную.')
+      if (!to || (to === 'other' ? !toOther.trim() : !units.some((u) => u.id === to && (u.is_active || u.id === request?.to_unit_id)))) throw new Error('Для поля «Куда» выберите БЕ/РЦ из списка или «Другой адрес» и укажите адрес вручную.')
+      if (targetSlotLimit < 1 && !preservesExistingAllocation) throw new Error(targetSlotType === 'main' ? 'Основной пул временно недоступен.' : 'Резервные слоты отключены администратором. Существующую заявку можно сохранить без изменения её даты, назначения и слота.')
       if (!cargo.length) throw new Error('Выберите хотя бы один вид груза.')
       if (transportTaskNumber.length > 44) throw new Error('Номер задания на перевозку не должен превышать 44 символа.')
       if (requestComment.length > 320) throw new Error('Комментарий не должен превышать 320 символов.')
@@ -1156,7 +1236,7 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
       if (cargo.includes('goods') && Number(stock) + Number(kdk) <= 0) throw new Error('Укажите количество паллет Сток и/или КДК.')
       if (cargo.includes('packaging') && Number(packaging) <= 0) throw new Error('Укажите количество тары.')
       if (cargo.includes('equipment') && (!Number.isInteger(Number(equipmentPalletPlaces)) || Number(equipmentPalletPlaces) <= 0)) throw new Error('Укажите количество грузомест оборудования в паллетоместах.')
-      await onSave({ requester_id: canChooseRequester ? requesterId : undefined, transport_date: date, slot_number: slotNo, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0), equipment_pallet_places: Number(equipmentPalletPlaces || 0), registry_file: registryFile, transport_task_number: transportTaskNumber, request_comment: requestComment }, request)
+      await onSave({ requester_id: canChooseRequester ? requesterId : undefined, transport_date: date, slot_number: slotNo, slot_type: targetSlotType, from_unit_id: from === 'other' ? null : from, from_other_address: from === 'other' ? fromOther.trim() : null, to_unit_id: to === 'other' ? null : to, to_other_address: to === 'other' ? toOther.trim() : null, capacity_tons: Number(capacity), loading_type: loadingType, cargo_types: cargo, stock_pallets: Number(stock || 0), kdk_pallets: Number(kdk || 0), packaging_qty: Number(packaging || 0), equipment_pallet_places: Number(equipmentPalletPlaces || 0), registry_file: registryFile, transport_task_number: transportTaskNumber, request_comment: requestComment }, request)
     } catch (e) { setFormError(errorText(e)) }
   }
 
@@ -1198,13 +1278,13 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
           <div className="form-section-label">Дата и слот</div>
           <div className="form-grid-two request-field-grid">
             <label className="request-field"><span>Дата перевозки</span><input type="date" value={date} min={editableFields ? minimumDate : undefined} onChange={(e) => setDate(e.target.value)} required disabled={!editableFields} title={isStaff ? 'Диспетчер и администратор могут назначить текущую или будущую дату.' : 'Дата ограничена настройкой срока предварительной записи.'}/><small className="field-hint">{isStaff ? 'Для сотрудников: сегодня или позже.' : `Минимальный срок подачи: ${bookingAdvanceDays} дн.`}</small></label>
-            <label className="request-field"><span>Транспортный слот</span><select value={slotNo} onChange={(e) => setSlotNo(Number(e.target.value))} disabled={!editableFields} title="Один из трёх общих слотов на выбранную дату.">{[1, 2, 3].map((n) => <option value={n} key={n}>Слот {n}</option>)}</select></label>
+            <label className="request-field"><span>{targetSlotType === 'main' ? 'Основной слот (направление в РЦ)' : 'Резервный слот (другой адрес)'}</span><select value={slotNo} onChange={(e) => setSlotNo(Number(e.target.value))} disabled={!editableFields || (targetSlotLimit === 0 && !preservesExistingAllocation)} title={targetSlotType === 'main' ? 'Основной пул: 3 независимых слота для направления в РЦ.' : `Резервный пул: ${reserveSlotLimit} независимых слотов для БЕ и других адресов.`}>{[...Array.from({ length: targetSlotLimit }, (_, i) => i + 1), ...(preservesExistingAllocation && slotNo > targetSlotLimit ? [slotNo] : [])].map((n) => <option value={n} key={n}>Слот {n}{n > targetSlotLimit ? ' · текущий, сохранён' : ''}</option>)}</select><small className="field-hint">{targetSlotType === 'main' ? 'Основные слоты не пересекаются с резервными.' : `В резервном пуле настроено: ${reserveSlotLimit}.${preservesExistingAllocation ? ' Текущий слот сохранён за этой заявкой.' : ''}`}</small></label>
           </div>
 
           <div className="form-section-label">Маршрут</div>
           <div className="form-grid-two request-field-grid">
-            <div className="request-field-group"><label htmlFor="request-from">Откуда</label><select id="request-from" value={from} onChange={(e) => setFrom(e.target.value)} required disabled={!editableFields} title="Бизнес-единица или адрес, откуда нужно забрать груз."><option value="">Выберите БЕ</option>{be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select>{from === 'other' && <label className="request-subfield">Адрес отправления<input value={fromOther} onChange={(e) => setFromOther(e.target.value)} required disabled={!editableFields}/></label>}</div>
-            <div className="request-field-group"><label htmlFor="request-to">Куда</label><select id="request-to" value={to} onChange={(e) => setTo(e.target.value)} required disabled={!editableFields} title="Бизнес-единица, РЦ или адрес назначения."><option value="">Выберите БЕ или РЦ</option>{destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select>{to === 'other' && <label className="request-subfield">Адрес назначения<input value={toOther} onChange={(e) => setToOther(e.target.value)} required disabled={!editableFields}/></label>}</div>
+            <div className="request-field-group"><label htmlFor="request-from">Откуда <span className="required-mark">*</span></label><select id="request-from" value={from} onChange={(e) => { setFrom(e.target.value); if (e.target.value !== 'other') setFromOther('') }} disabled={!editableFields} title="Выберите БЕ отправления или вариант «Другой адрес»."><option value="">Выберите БЕ</option>{be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select><label className="request-subfield"><span>Адрес отправления</span><input value={from === 'other' ? fromOther : fromUnitSelected?.address || ''} onChange={(e) => setFromOther(e.target.value)} disabled={!editableFields || !from} readOnly={from !== 'other'} placeholder={from ? (from === 'other' ? 'Укажите адрес вручную' : 'Адрес из справочника') : 'Сначала выберите БЕ или «Другой адрес»'}/>{from && from !== 'other' && !fromUnitSelected?.address && <small className="field-hint">Адрес для выбранной БЕ не заполнен в справочнике. Обратитесь к администратору.</small>}</label></div>
+            <div className="request-field-group"><label htmlFor="request-to">Куда <span className="required-mark">*</span></label><select id="request-to" value={to} onChange={(e) => { setTo(e.target.value); if (e.target.value !== 'other') setToOther(''); setSlotNo(1) }} disabled={!editableFields} title="Выберите РЦ, БЕ или вариант «Другой адрес»."><option value="">Выберите БЕ или РЦ</option>{destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select><label className="request-subfield"><span>Адрес назначения</span><input value={to === 'other' ? toOther : toUnitSelected?.address || ''} onChange={(e) => setToOther(e.target.value)} disabled={!editableFields || !to} readOnly={to !== 'other'} placeholder={to ? (to === 'other' ? 'Укажите адрес вручную' : 'Адрес из справочника') : 'Сначала выберите РЦ/БЕ или «Другой адрес»'}/>{to && to !== 'other' && !toUnitSelected?.address && <small className="field-hint">Адрес для выбранного подразделения не заполнен в справочнике. Обратитесь к администратору.</small>}</label></div>
           </div>
 
           <div className="form-section-label">Параметры транспорта</div>
