@@ -1049,3 +1049,94 @@ html[data-theme="dark"] .calendar-capacities .capacity-reserve svg { color: #8ed
   .calendar-foot { align-items: flex-start; }
   .calendar-foot-legend { gap: 7px 10px; font-size: 8px; }
 }
+
+
+/* AksonDispatch v1.0.4 — larger centered slot indicators, full-cell calendar click, blue navigation */
+/* Keep the existing DockSlot cell treatment; make the whole day a comfortable target. */
+.calendar-day {
+  cursor: pointer;
+}
+.calendar-day:focus-visible {
+  outline: 2px solid #3986bd;
+  outline-offset: 2px;
+}
+.calendar-date-button {
+  cursor: pointer;
+}
+.calendar-export-check {
+  cursor: pointer;
+}
+.calendar-capacities {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  margin-top: 7px;
+  padding-top: 0;
+  transform: translateY(2px);
+}
+.calendar-capacities > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 30px;
+  padding: 1px 2px !important;
+  background: transparent !important;
+  border-radius: 0;
+  font-size: 11px !important;
+  line-height: 1;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.calendar-capacities > span svg {
+  width: 14px !important;
+  height: 14px !important;
+  flex: 0 0 14px;
+  stroke-width: 2.1;
+}
+.calendar-capacities > span b {
+  font-size: 11px;
+  line-height: 1;
+}
+.calendar-capacities .capacity-main svg { color: #267fae; }
+.calendar-capacities .capacity-reserve svg { color: #218653; }
+
+/* Active item in the right sidebar uses blue; notification badges remain red. */
+.nav-link.active {
+  background: #eaf4fc !important;
+  color: #2879ad !important;
+  box-shadow: inset 3px 0 0 #3187b9 !important;
+}
+.nav-link.active svg {
+  color: #2879ad !important;
+}
+html[data-theme="dark"] .nav-link.active {
+  background: rgba(96,165,250,.14) !important;
+  color: #93c5fd !important;
+  box-shadow: inset 3px 0 0 #60a5fa !important;
+}
+html[data-theme="dark"] .nav-link.active svg {
+  color: #93c5fd !important;
+}
+
+@media (max-width: 850px) {
+  .calendar-capacities {
+    gap: 8px;
+    margin-top: 5px;
+    transform: translateY(1px);
+  }
+  .calendar-capacities > span { font-size: 10px !important; }
+  .calendar-capacities > span svg { width: 13px !important; height: 13px !important; flex-basis: 13px; }
+  .calendar-capacities > span b { font-size: 10px; }
+}
+@media (max-width: 620px) {
+  .calendar-capacities {
+    gap: 5px;
+    margin-top: 4px;
+    transform: translateY(1px);
+  }
+  .calendar-capacities > span { gap: 3px; min-width: 24px; font-size: 9px !important; }
+  .calendar-capacities > span svg { width: 12px !important; height: 12px !important; flex-basis: 12px; }
+  .calendar-capacities > span b { font-size: 9px; }
+}
