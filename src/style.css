@@ -1479,3 +1479,58 @@ html[data-theme="dark"] .instruction-role-icon {
   .instruction-sections { grid-template-columns: 1fr; gap: 15px; }
   .instruction-card-heading h2 { font-size: 15px; }
 }
+
+
+/* v1.0.9 customer calendar privacy + smooth slot-icon hover/selection state. */
+.calendar-capacities > span {
+  transition:
+    color .18s ease,
+    background-color .18s ease,
+    border-color .18s ease,
+    box-shadow .18s ease;
+}
+
+/* Slot symbols are neutral by default, including days with bookings. */
+.calendar-day .calendar-capacities .capacity-main,
+.calendar-day .calendar-capacities .capacity-reserve {
+  color: var(--muted-2) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.calendar-day .calendar-capacities .capacity-main svg,
+.calendar-day .calendar-capacities .capacity-reserve svg {
+  color: var(--muted-2) !important;
+  transition: color .18s ease;
+}
+
+/* Reveal pool colors only while hovering a day or while that day is selected. */
+.calendar-day:is(:hover, .selected) .calendar-capacities .capacity-main {
+  color: #267fae !important;
+  background: rgba(54, 145, 190, .075) !important;
+  border-color: rgba(54, 145, 190, .25) !important;
+}
+.calendar-day:is(:hover, .selected) .calendar-capacities .capacity-main svg {
+  color: #267fae !important;
+}
+.calendar-day:is(:hover, .selected) .calendar-capacities .capacity-reserve {
+  color: #218653 !important;
+  background: rgba(33, 134, 83, .075) !important;
+  border-color: rgba(33, 134, 83, .25) !important;
+}
+.calendar-day:is(:hover, .selected) .calendar-capacities .capacity-reserve svg {
+  color: #218653 !important;
+}
+
+html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities .capacity-main {
+  color: #91c8e6 !important;
+  background: rgba(59, 130, 246, .12) !important;
+  border-color: rgba(109, 181, 232, .32) !important;
+}
+html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities .capacity-main svg { color: #91c8e6 !important; }
+html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities .capacity-reserve {
+  color: #8ed4ab !important;
+  background: rgba(16, 185, 129, .12) !important;
+  border-color: rgba(89, 194, 143, .32) !important;
+}
+html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities .capacity-reserve svg { color: #8ed4ab !important; }
