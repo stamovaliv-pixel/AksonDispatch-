@@ -1384,3 +1384,33 @@ html[data-theme="dark"] .calendar-day.has-booking-count .calendar-capacities .ca
   font-weight: 800;
   line-height: 1.1;
 }
+
+
+/* v1.0.8 — cleaner slot indicators and stronger neutral contrast */
+/* Remove the outline around both main and reserve capacity indicators. */
+.calendar-capacities > span,
+.calendar-day.has-booking-count .calendar-capacities .capacity-main,
+.calendar-day.has-booking-count .calendar-capacities .capacity-reserve {
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Empty dates remain neutral, but the count and glyphs are easier to read. */
+.calendar-day:not(.has-booking-count) .calendar-capacities .capacity-main,
+.calendar-day:not(.has-booking-count) .calendar-capacities .capacity-reserve {
+  color: #8793a1 !important;
+}
+.calendar-day:not(.has-booking-count) .calendar-capacities .capacity-main svg,
+.calendar-day:not(.has-booking-count) .calendar-capacities .capacity-reserve svg {
+  color: #8793a1 !important;
+}
+
+html[data-theme="dark"] .calendar-day:not(.has-booking-count) .calendar-capacities .capacity-main,
+html[data-theme="dark"] .calendar-day:not(.has-booking-count) .calendar-capacities .capacity-reserve {
+  color: #94a2b2 !important;
+}
+html[data-theme="dark"] .calendar-day:not(.has-booking-count) .calendar-capacities .capacity-main svg,
+html[data-theme="dark"] .calendar-day:not(.has-booking-count) .calendar-capacities .capacity-reserve svg {
+  color: #94a2b2 !important;
+}
