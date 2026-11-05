@@ -878,3 +878,174 @@ html[data-theme="dark"] .cancelled-toggle.active svg { color: #ff9298; }
   .selected-request-view { top: 6px; right: 6px; }
   .requests-filter-fields { grid-template-columns: 1fr; }
 }
+
+
+/* AksonDispatch v1.0.3 — calendar alignment, badge stacking and persistent view */
+/* Plain icons: retain blue/green icon colors without colored tiles behind them. */
+.calendar-capacities .capacity-main,
+.calendar-capacities .capacity-reserve {
+  background: transparent !important;
+  padding-left: 2px;
+  padding-right: 2px;
+}
+.calendar-capacities .capacity-main svg { color: #267fae; }
+.calendar-capacities .capacity-reserve svg { color: #218653; }
+html[data-theme="dark"] .calendar-capacities .capacity-main,
+html[data-theme="dark"] .calendar-capacities .capacity-reserve {
+  background: transparent !important;
+}
+html[data-theme="dark"] .calendar-capacities .capacity-main svg { color: #91c8e6; }
+html[data-theme="dark"] .calendar-capacities .capacity-reserve svg { color: #8ed4ab; }
+
+/* The DockSlot top rail stays under the selected-cell outline. */
+.calendar-day {
+  overflow: visible;
+  isolation: isolate;
+}
+.calendar-day::before {
+  z-index: 0;
+  pointer-events: none;
+}
+.calendar-day-top,
+.calendar-capacities {
+  position: relative;
+  z-index: 1;
+}
+.calendar-day.selected {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.calendar-day.selected::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border: 2px solid #e64b50;
+  border-radius: inherit;
+  z-index: 20;
+  pointer-events: none;
+}
+.calendar-day.today.selected::after { border-color: #e64b50; }
+
+/* Date on the upper-left; export checkbox on the upper-right below the count badge. */
+.calendar-day {
+  align-items: stretch;
+  justify-content: flex-start;
+}
+.calendar-day-top {
+  justify-content: flex-start !important;
+  align-items: flex-start;
+  width: 100%;
+  min-height: 20px;
+  padding-top: 1px;
+}
+.calendar-date-button {
+  justify-content: flex-start !important;
+  align-items: center;
+  width: auto;
+  min-height: 18px;
+  padding: 0 25px 0 1px !important;
+  text-align: left !important;
+  line-height: 1;
+}
+.calendar-date-full {
+  font-size: 10px !important;
+  font-weight: 800;
+  letter-spacing: .01em;
+  text-transform: none !important;
+  font-variant-numeric: tabular-nums;
+}
+.calendar-day.today .calendar-date-full { color: var(--primary); }
+.calendar-export-check {
+  position: absolute !important;
+  top: 14px !important;
+  right: 4px !important;
+  left: auto !important;
+  z-index: 30 !important;
+  width: 14px;
+  height: 14px;
+}
+.calendar-export-check span { width: 11px !important; height: 11px !important; }
+
+/* Badge is 10% smaller than v1.0.2. Grid-order z-index is assigned in React. */
+.calendar-count-badge {
+  top: -9px !important;
+  right: -9px !important;
+  z-index: 9999 !important;
+  min-width: 19px !important;
+  width: 19px;
+  height: 19px !important;
+  padding: 0 !important;
+  font-size: 9px !important;
+  line-height: 1;
+}
+.calendar-day.past-day {
+  opacity: 1 !important;
+  background: var(--surface-soft) !important;
+  border-color: var(--border) !important;
+}
+.calendar-day.past-day::before { opacity: .45; filter: grayscale(1); }
+.calendar-day.past-day .calendar-day-top,
+.calendar-day.past-day .calendar-capacities { opacity: .48; }
+.calendar-day.past-day .calendar-count-badge { opacity: 1; }
+.calendar-day.past-day.selected { border-color: transparent !important; }
+
+/* Filter counter sits vertically centered with controls. */
+.calendar-filters-split { align-items: center !important; }
+.calendar-filter-count {
+  grid-column: auto !important;
+  align-self: center !important;
+  justify-self: center;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* Lift the small label inside the right-hand request count tile. */
+.day-count { padding-bottom: 2px; line-height: 1; }
+.day-count small {
+  position: relative;
+  top: -2px;
+  margin-top: 1px;
+  line-height: 1;
+  font-size: 7px;
+}
+
+.calendar-foot { align-items: center; }
+.calendar-foot-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.calendar-foot-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.calendar-foot-legend > span:first-child svg { color: #267fae; }
+.calendar-foot-legend > span:last-child svg { color: #218653; }
+
+@media (max-width: 850px) {
+  .calendar-export-check { top: 13px !important; right: 3px !important; }
+  .calendar-count-badge {
+    top: -7px !important;
+    right: -7px !important;
+    min-width: 16px !important;
+    width: 16px;
+    height: 16px !important;
+    font-size: 8px !important;
+  }
+  .calendar-foot-legend { justify-content: flex-start; }
+}
+@media (max-width: 620px) {
+  .calendar-date-button { padding-right: 22px !important; }
+  .calendar-date-full { font-size: 9px !important; }
+  .calendar-export-check { top: 12px !important; right: 2px !important; }
+  .calendar-filter-count {
+    grid-column: 1 / -1 !important;
+    justify-self: center !important;
+  }
+  .calendar-foot { align-items: flex-start; }
+  .calendar-foot-legend { gap: 7px 10px; font-size: 8px; }
+}

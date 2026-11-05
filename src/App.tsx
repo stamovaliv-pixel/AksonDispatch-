@@ -47,13 +47,19 @@ function App() {
   const [session, setSession] = useState<any>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const realtimeRefreshTimer = useRef<number | null>(null)
+  const loadedProfileIdRef = useRef<string | null>(null)
   const [units, setUnits] = useState<BusinessUnit[]>([])
   const [requests, setRequests] = useState<TransportRequest[]>([])
   const [occupancy, setOccupancy] = useState<SlotOccupancy[]>([])
   const [calendarSlots, setCalendarSlots] = useState<CalendarSlot[]>([])
   const [searchRequests, setSearchRequests] = useState<TransportRequest[]>([])
   const [people, setPeople] = useState<Profile[]>([])
-  const [view, setView] = useState<View>('overview')
+  const [view, setView] = useState<View>(() => {
+    try {
+      const saved = sessionStorage.getItem('akson-transport-active-view') as View | null
+      return saved || 'overview'
+    } catch { return 'overview' }
+  })
   const [month, setMonth] = useState(new Date(today.getFullYear(), today.getMonth(), 1))
   const [selectedDay, setSelectedDay] = useState(iso(today))
   const [requestModal, setRequestModal] = useState<{ open: boolean; request?: TransportRequest; slot?: number; date?: string }>({ open: false })
@@ -102,6 +108,9 @@ function App() {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem('akson-transport-theme', theme) } catch { /* private browsing */ }
   }, [theme])
+  useEffect(() => {
+    try { sessionStorage.setItem('akson-transport-active-view', view) } catch { /* storage may be disabled */ }
+  }, [view])
   // Native hover hints are applied to every input, selector and action button.
   // Explicit, hand-written title attributes always take precedence.
   useEffect(() => {
@@ -134,14 +143,26 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!session || !supabase) { setProfile(null); setPeople([]); return }
+    if (!session || !supabase) { setProfile(null); setPeople([]); loadedProfileIdRef.current = null; return }
     let alive = true
     supabase.from('profiles').select('*').eq('id', session.user.id).single().then(async ({ data, error: profileError }) => {
       if (!alive) return
       if (profileError || !data) { setError(`Не удалось загрузить профиль: ${profileError?.message || 'профиль не найден'}`); return }
       if (!data.is_active) { await supabase?.auth.signOut(); setError('Учётная запись заблокирована администратором.'); return }
+      if (loadedProfileIdRef.current !== data.id) {
+        loadedProfileIdRef.current = data.id
+        let savedView: View | null = null
+        try { savedView = sessionStorage.getItem('akson-transport-active-view') as View | null } catch { /* storage may be disabled */ }
+        const allowedViews: Record<Role, View[]> = {
+          customer: ['calendar', 'requests'],
+          utz: ['calendar', 'requests'],
+          dispatcher: ['overview', 'calendar', 'requests', 'reports', 'history'],
+          admin: ['overview', 'calendar', 'requests', 'reports', 'users', 'directory', 'settings', 'history']
+        }
+        const defaultView: View = data.role === 'customer' || data.role === 'utz' ? 'calendar' : 'overview'
+        setView(savedView && allowedViews[data.role as Role]?.includes(savedView) ? savedView : defaultView)
+      }
       setProfile(data as Profile)
-      setView(data.role === 'utz' || data.role === 'customer' ? 'calendar' : 'overview')
       setError('')
     })
     return () => { alive = false }
@@ -770,11 +791,11 @@ function OverviewView({ profile, requests, occupancy, units, onNavigate, onReque
     { label: 'В работе', value: active, icon: Activity, tone: 'orange', hint: 'Созданные, в поиске и подтверждённые', filter: 'active' },
     { label: 'Подтверждено', value: periodRequests.filter((r) => r.status === 'confirmed').length, icon: CheckCircle2, tone: 'green', hint: 'Транспорт назначен', filter: 'confirmed' },
     { label: 'Выполнено', value: periodRequests.filter((r) => r.status === 'completed').length, icon: Truck, tone: 'violet', hint: 'Завершённые перевозки', filter: 'completed' },
-    { label: 'Отменены', value: periodRequests.filter((r) => r.status === 'cancelled').length, icon: Ban, tone: 'grey', hint: 'Отменённые заявки', filter: 'cancelled' }
+    { label: 'Отменено', value: periodRequests.filter((r) => r.status === 'cancelled').length, icon: Ban, tone: 'grey', hint: 'Отменённые заявки', filter: 'cancelled' }
   ]
   const next = requests.filter((r) => r.transport_date >= iso(today) && !['cancelled', 'completed'].includes(r.status)).sort((a, b) => a.transport_date.localeCompare(b.transport_date) || a.slot_type.localeCompare(b.slot_type) || a.slot_number - b.slot_number).slice(0, 5)
   return <div className="overview-page">
-    <div className="section-heading overview-section-heading"><div><h2>Показатели за месяц</h2><p>Текущая статистика заявок</p></div><button className="subtle-link" onClick={() => onSelectFilter('all')}>Все заявки <ArrowRight size={15}/></button></div>
+    <div className="section-heading overview-section-heading"><div><h2>Показатели за месяц</h2></div><button className="subtle-link" onClick={() => onSelectFilter('all')}>Все заявки <ArrowRight size={15}/></button></div>
     <div className="stats-grid">{stats.map((item) => { const Icon = item.icon; return <button type="button" className="stat-card stat-card-button" key={item.label} onClick={() => onSelectFilter(item.filter)} title={`Открыть заявки: ${item.label.toLowerCase()}`} aria-label={`Открыть заявки: ${item.label}, ${item.value}`}><div className={`stat-icon tone-${item.tone}`}><Icon size={19}/></div><div className="stat-label">{item.label}</div><div className="stat-value">{item.value}</div><div className="stat-hint">{item.hint}</div></button> })}</div>
     <div className="overview-grid"><section className="surface-card upcoming-card"><div className="card-heading"><div><h3>Ближайшие заявки</h3><p>Предстоящие перевозки</p></div><button className="icon-button" onClick={() => onNavigate('requests')} title="Открыть все заявки"><ArrowUpRight size={17}/></button></div>{next.length ? <div className="upcoming-list">{next.map((r) => <button type="button" className="upcoming-row upcoming-row-button" key={r.id} onClick={() => onOpenRequest(r)} title={`Открыть заявку №${r.request_no}`} aria-label={`Открыть заявку №${r.request_no}, ${dateLabel(r.transport_date)}, ${statusNames[r.status]}`}><div className="upcoming-date"><strong>{new Date(`${r.transport_date}T00:00:00`).getDate()}</strong><span>{new Date(`${r.transport_date}T00:00:00`).toLocaleDateString('ru-RU', { month: 'short' })}</span></div><div className="upcoming-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>№{r.request_no} · {r.slot_type === 'main' ? 'Основной' : 'Резервный'} слот {r.slot_number} · {r.capacity_tons} т</small></div><StatusBadge status={r.status}/></button>)}</div> : <EmptyState icon={CalendarDays} title="Предстоящих заявок нет" text="Когда появятся новые перевозки, они отобразятся здесь."/>}</section><section className="surface-card today-card"><div className="card-heading"><div><h3>Сегодня</h3><p>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</p></div><div className="today-count">{todayOccupancy.length} <span>из 3 основных</span></div></div><div className="today-slot-list">{[1, 2, 3].map((slot) => { const request = todayRequests.find((r) => r.slot_type === 'main' && r.slot_number === slot && r.status !== 'cancelled'); const occupied = todayOccupancy.some((s) => s.slot_number === slot); return <div className="today-slot" key={slot}><div className={`slot-indicator ${occupied ? 'filled' : ''}`}>{slot}</div><div><strong>Основной слот {slot}</strong><small>{request ? `Заявка №${request.request_no}` : occupied ? 'Занят другой заявкой' : 'Свободен'}</small></div><span className={occupied ? 'slot-state occupied' : 'slot-state free'}>{occupied ? 'Занят' : 'Свободен'}</span></div>})}</div><button className="wide-subtle-button" onClick={() => onNavigate('calendar')}>Перейти к календарю <ArrowRight size={15}/></button></section></div>
     <div className="overview-bottom"><div className="info-mini"><div className="mini-icon"><Building2 size={18}/></div><div><strong>{units.filter((u) => u.kind === 'BE').length} бизнес-единиц</strong><small>В активном справочнике</small></div></div><div className="info-mini"><div className="mini-icon purple"><Warehouse size={18}/></div><div><strong>{units.filter((u) => u.kind === 'RC').length} распределительных центров</strong><small>Доступно для маршрутов</small></div></div><div className="info-mini"><div className="mini-icon green"><ShieldCheck size={18}/></div><div><strong>{roleNames[profile.role]}</strong><small>Ваша роль в системе</small></div></div></div>
@@ -822,7 +843,7 @@ function CalendarView({ month, days, requests, allRequests, searchRequests, slot
   const previousStart = new Date(days[0]); previousStart.setDate(previousStart.getDate() - 30)
   const previous30Days = Array.from({ length: 30 }, (_, i) => { const d = new Date(previousStart); d.setDate(previousStart.getDate() + i); return d })
   const selectedDatesSet = new Set(selectedExportDates)
-  const shortDate = (d: Date) => d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }).replace('.', '')
+  const shortDate = (d: Date) => `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`
   const dayCounts = (dateKey: string) => {
     const slotRows = slots.filter((r) => r.transport_date === dateKey)
     const occupancyRows = occupancy.filter((r) => r.transport_date === dateKey)
@@ -833,11 +854,15 @@ function CalendarView({ month, days, requests, allRequests, searchRequests, slot
     return { main: mainSet.size, reserve: reserveSet.size, total: mainSet.size + reserveSet.size, freeMain: Math.max(0, 3 - mainSet.size), freeReserve: Math.max(0, reserveSlotLimit - reserveSet.size) }
   }
   const toggleExportDate = (date: string) => setSelectedExportDates((old) => old.includes(date) ? old.filter((d) => d !== date) : [...old, date])
-  const renderDay = (day: Date, outside = false, compact = false) => {
+  const renderDay = (day: Date, outside = false, compact = false, stackIndex = 0) => {
     const key = iso(day)
     const counts = dayCounts(key)
     const unavailable = isCustomer && key < minCreateDate
-    return <article key={key} className={`calendar-day ${counts.total > 0 ? 'has-booking-count' : ''} ${compact ? 'calendar-day-compact' : ''} ${outside ? 'outside' : ''} ${selectedDay === key ? 'selected' : ''} ${key === iso(today) ? 'today' : ''} ${unavailable ? 'booking-unavailable' : ''}`}>
+    const pastDay = key < iso(today)
+    // Later rows must paint above the row before them (badge overhangs upward);
+    // earlier columns must paint above cells to their right (badge overhangs right).
+    const stackZ = Math.floor(stackIndex / 7) * 10 + (6 - (stackIndex % 7)) + 1
+    return <article key={key} style={{ zIndex: stackZ }} className={`calendar-day ${counts.total > 0 ? 'has-booking-count' : ''} ${pastDay ? 'past-day' : ''} ${compact ? 'calendar-day-compact' : ''} ${outside ? 'outside' : ''} ${selectedDay === key ? 'selected' : ''} ${key === iso(today) ? 'today' : ''} ${unavailable ? 'booking-unavailable' : ''}`}>
       <div className="calendar-day-top"><button type="button" className="calendar-date-button" onClick={() => setSelectedDay(key)} title={`Показать заявки за ${dateLabel(key)}`}><span className="calendar-date-full">{shortDate(day)}</span></button>{showExportTools && <label className="calendar-export-check" title={`Включить ${dateLabel(key)} в выгрузку`}><input type="checkbox" checked={selectedDatesSet.has(key)} onChange={() => toggleExportDate(key)}/><span/></label>}</div>
       {counts.total > 0 && <span className="calendar-count-badge" aria-label={`Заявок: ${counts.total}`} title={`Заявок: ${counts.total}`}>{counts.total > 99 ? '99+' : counts.total}</span>}
       <div className="calendar-capacities"><span className="capacity-main" title={`Основные слоты: свободно ${counts.freeMain} из 3`}><Warehouse size={12}/><b>{counts.freeMain}</b></span><span className="capacity-reserve" title={`Резервные слоты: свободно ${counts.freeReserve} из ${reserveSlotLimit}`}><MapPin size={12}/><b>{counts.freeReserve}</b></span></div>
@@ -847,7 +872,7 @@ function CalendarView({ month, days, requests, allRequests, searchRequests, slot
   const resultsTitle = filtersActive ? 'Ближайшие совпадения' : `Заявки за ${dateLabel(selectedDay, { day: 'numeric', month: 'long', year: 'numeric' })}`
   return <div className="calendar-page">
     <section className="surface-card calendar-card">
-      <div className="calendar-toolbar"><div className="calendar-toolbar-copy"><strong>Календарь транспортных слотов</strong><span>Выберите день, чтобы увидеть заявки. Галочками отметьте дни для выгрузки.</span></div><div className="calendar-toolbar-actions"><button type="button" className={`icon-button ${showPrevious30Days ? 'active' : ''}`} onClick={() => setShowPrevious30Days(!showPrevious30Days)} title={showPrevious30Days ? 'Скрыть предыдущие 30 дней' : 'Показать предыдущие 30 дней'}><CalendarClock size={17}/></button><button type="button" className={`icon-button calendar-export-toggle ${showExportTools ? 'active' : ''}`} onClick={() => setShowExportTools(!showExportTools)} aria-pressed={showExportTools} title={showExportTools ? 'Скрыть инструменты выгрузки' : 'Показать инструменты выгрузки'}><Download size={17}/></button><span className="calendar-toolbar-month">{monthTitle(month)}</span></div></div>
+      <div className="calendar-toolbar"><div className="calendar-toolbar-copy"><strong>Календарь транспортных слотов</strong></div><div className="calendar-toolbar-actions"><button type="button" className={`icon-button ${showPrevious30Days ? 'active' : ''}`} onClick={() => setShowPrevious30Days(!showPrevious30Days)} title={showPrevious30Days ? 'Скрыть предыдущие 30 дней' : 'Показать предыдущие 30 дней'}><CalendarClock size={17}/></button><button type="button" className={`icon-button calendar-export-toggle ${showExportTools ? 'active' : ''}`} onClick={() => setShowExportTools(!showExportTools)} aria-pressed={showExportTools} title={showExportTools ? 'Скрыть инструменты выгрузки' : 'Показать инструменты выгрузки'}><Download size={17}/></button><span className="calendar-toolbar-month">{monthTitle(month)}</span></div></div>
       {showExportTools && <div className="calendar-export-toolbar"><span>Выбрано дней: <b>{selectedExportDates.length}</b></span><button className="button button-secondary button-compact" disabled={!selectedExportDates.length || exportBusy} onClick={async () => { setExportBusy(true); try { await onExportRegistries(selectedExportDates) } finally { setExportBusy(false) } }}><FileSpreadsheet size={14}/> Объединить реестры</button><button className="button button-secondary button-compact" disabled={!selectedExportDates.length || exportBusy} onClick={() => onExportCsv(selectedExportDates)}><Download size={14}/> Выгрузить список CSV</button><button className="icon-button small" onClick={() => setSelectedExportDates([])} title="Снять отметки со всех дат"><X size={14}/></button></div>}
       {!isCustomer && <div className="calendar-filters calendar-filters-split">
         <label><span>Заказчик</span><input value={customerFilter} onChange={(e) => setCustomerFilter(e.target.value)} placeholder="Логин заказчика"/></label>
@@ -856,13 +881,12 @@ function CalendarView({ month, days, requests, allRequests, searchRequests, slot
         <select value={cargoFilter} onChange={(e) => setCargoFilter(e.target.value)} title="Фильтр по типу груза"><option value="all">Все типы груза</option><option value="goods">Товар</option><option value="equipment">Оборудование</option><option value="packaging">Тара</option></select>
         <select value={capacityFilter} onChange={(e) => setCapacityFilter(e.target.value)} title="Фильтр по грузоподъёмности"><option value="all">Любой тоннаж</option><option value="1.5">1,5 т</option><option value="5">5 т</option><option value="10">10 т</option><option value="20">20 т</option></select>
         {filtersActive && <button className="icon-button small" title="Сбросить фильтры календаря" onClick={() => { setCustomerFilter(''); setFromFilter(''); setToFilter(''); setCargoFilter('all'); setCapacityFilter('all') }}><X size={14}/></button>}
-        <span className="calendar-filter-count">Совпадений: <b>{matchedCount}</b></span>
+        <span className="calendar-filter-count">Найдено: <b>{matchedCount}</b></span>
       </div>}
-      <div className="calendar-legend"><span><Warehouse size={13}/> Основные — направление в РЦ</span><span><MapPin size={13}/> Резервные — другие адреса</span><span className="slots-note">Основных слотов: 3 · резервных: {reserveSlotLimit}</span></div>
-      {showPrevious30Days && <><div className="calendar-period-caption">Предыдущие 30 дней</div><div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div><div className="calendar-grid calendar-previous-grid">{Array.from({ length: (previousStart.getDay() + 6) % 7 }, (_, i) => <span key={`pad-${i}`} className="calendar-grid-pad"/>)}{previous30Days.map((day) => renderDay(day, true, true))}</div></>}
+      {showPrevious30Days && <><div className="calendar-period-caption">Предыдущие 30 дней</div><div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div><div className="calendar-grid calendar-previous-grid">{Array.from({ length: (previousStart.getDay() + 6) % 7 }, (_, i) => <span key={`pad-${i}`} className="calendar-grid-pad"/>)}{previous30Days.map((day, index) => renderDay(day, true, true, ((previousStart.getDay() + 6) % 7) + index))}</div></>}
       <div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div>
-      <div className="calendar-grid">{days.map((day) => renderDay(day, day.getMonth() !== month.getMonth()))}</div>
-      <div className="calendar-foot"><span><span className="online-dot"/> Заявок за выбранный период: {allRequests.filter((r) => r.status !== 'cancelled').length}</span><span>Красный индикатор показывает число заявок. Синие пиктограммы — основные слоты, зелёные — резервные.</span></div>
+      <div className="calendar-grid">{days.map((day, index) => renderDay(day, day.getMonth() !== month.getMonth(), false, index))}</div>
+      <div className="calendar-foot"><span><span className="online-dot"/> Заявок за выбранный период: {allRequests.filter((r) => r.status !== 'cancelled').length}</span><div className="calendar-foot-legend"><span><Warehouse size={13}/> Основные слоты — направление в РЦ</span><span><MapPin size={13}/> Резервные слоты — другие адреса</span></div></div>
     </section>
     <section className="surface-card selected-day-card">
       <div className="card-heading"><div><h3>{resultsTitle}</h3><p>{filtersActive ? 'Фильтр не привязан к выбранному дню · горизонт 3 месяца' : isCustomer ? 'Ваши заявки на выбранную дату' : 'Заявки всех пользователей на выбранную дату'}</p></div><div className="day-count">{customerOrDayRequests.length}<small>{filtersActive ? 'из найденных' : 'заявок'}</small></div></div>
