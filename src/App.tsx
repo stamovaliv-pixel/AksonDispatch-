@@ -1000,7 +1000,7 @@ function CalendarView({ days, requests, allRequests, searchRequests, slots, occu
   const customerEmptyDayMessage = selectedDayIsPast
     ? 'Приём заявок на эту дату уже закрыт.'
     : selectedDayIsBeforeBookingWindow
-      ? `Приём заявок на эту дату ещё не открыт. Запись станет доступна с ${dateLabel(minCreateDate)}.`
+      ? 'Приём заявок на эту дату закрыт.'
       : selectedDayIsBeyondWindow
         ? `Эта дата пока вне периода планирования. Сейчас можно создавать заявки до ${dateLabel(maxCreateDate)}.`
         : (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0
