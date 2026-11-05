@@ -5,7 +5,7 @@ import {
   CircleHelp, FileSpreadsheet, Filter, LayoutDashboard, LogOut, Menu, Moon,
   Package, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sun, Truck, Users,
   Warehouse, X, Pencil, Ban, Eye, Layers3, History as HistoryIcon, Save,
-  SlidersHorizontal, Clock3, Upload, Download, FileText, MapPin, CalendarClock
+  SlidersHorizontal, Clock3, Upload, Download, FileText, MapPin, CalendarClock, Copy
 } from 'lucide-react'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRequest } from './types'
@@ -1192,6 +1192,7 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const [transportTaskNumber, setTransportTaskNumber] = useState(request?.transport_task_number || '')
   const [requestComment, setRequestComment] = useState(request?.request_comment || '')
   const [formError, setFormError] = useState('')
+  const [copiedField, setCopiedField] = useState('')
   const [registryFile, setRegistryFile] = useState<File | null>(null)
   const [currentRegistryPath, setCurrentRegistryPath] = useState(request?.registry_file_path || null)
   const [currentRegistryName, setCurrentRegistryName] = useState(request?.registry_file_name || null)
@@ -1206,6 +1207,8 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const destinations = units.filter((u) => u.is_active || u.id === request?.to_unit_id)
   const fromUnitSelected = units.find((u) => u.id === from)
   const toUnitSelected = units.find((u) => u.id === to)
+  const originAddressValue = from === 'other' ? fromOther.trim() : (fromUnitSelected?.address || '').trim()
+  const destinationAddressValue = to === 'other' ? toOther.trim() : (toUnitSelected?.address || '').trim()
   const targetSlotType: 'main' | 'reserve' = to !== 'other' && toUnitSelected?.kind === 'RC' ? 'main' : 'reserve'
   const targetSlotLimit = targetSlotType === 'main' ? 3 : reserveSlotLimit
   const sameOriginalDestination = !!request && (request.to_unit_id
@@ -1226,6 +1229,33 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
     if (nextFree) setSlotNo(nextFree)
   }, [date, targetSlotType, targetSlotLimit, occupancy, request?.id, request?.to_unit_id, request?.to_other_address, slotNo, to, toOther, preservesExistingAllocation])
   const occupied = slotIsOccupied(slotNo)
+
+  async function copyField(key: string, value: string) {
+    const textToCopy = String(value || '').trim()
+    if (!textToCopy) return
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(textToCopy)
+      } else {
+        const helper = document.createElement('textarea')
+        helper.value = textToCopy
+        helper.setAttribute('readonly', '')
+        helper.style.position = 'fixed'
+        helper.style.opacity = '0'
+        helper.style.left = '-9999px'
+        document.body.appendChild(helper)
+        helper.select()
+        const copied = document.execCommand('copy')
+        helper.remove()
+        if (!copied) throw new Error('Clipboard copy was rejected')
+      }
+      setCopiedField(key)
+      setFormError('')
+    } catch {
+      setCopiedField('')
+      setFormError('Не удалось скопировать значение. Выделите текст и скопируйте его вручную.')
+    }
+  }
 
   function toggleCargo(value: string) { setCargo((old) => old.includes(value) ? old.filter((x) => x !== value) : [...old, value]) }
 
@@ -1308,8 +1338,8 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
 
           <div className="form-section-label">Маршрут</div>
           <div className="form-grid-two request-field-grid">
-            <div className="request-field-group"><label htmlFor="request-from">Откуда <span className="required-mark">*</span></label><select id="request-from" value={from} onChange={(e) => { setFrom(e.target.value); if (e.target.value !== 'other') setFromOther('') }} disabled={!editableFields} title="Выберите БЕ отправления или вариант «Другой адрес»."><option value="">Выберите БЕ</option>{be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select><label className="request-subfield"><span>Адрес отправления</span><input value={from === 'other' ? fromOther : fromUnitSelected?.address || ''} onChange={(e) => setFromOther(e.target.value)} disabled={!editableFields || !from} readOnly={from !== 'other'} placeholder={from ? (from === 'other' ? 'Укажите адрес вручную' : 'Адрес из справочника') : 'Сначала выберите БЕ или «Другой адрес»'}/>{from && from !== 'other' && !fromUnitSelected?.address && <small className="field-hint">Адрес для выбранной БЕ не заполнен в справочнике. Обратитесь к администратору.</small>}</label></div>
-            <div className="request-field-group"><label htmlFor="request-to">Куда <span className="required-mark">*</span></label><select id="request-to" value={to} onChange={(e) => { setTo(e.target.value); if (e.target.value !== 'other') setToOther(''); setSlotNo(1) }} disabled={!editableFields} title="Выберите РЦ, БЕ или вариант «Другой адрес»."><option value="">Выберите БЕ или РЦ</option>{destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select><label className="request-subfield"><span>Адрес назначения</span><input value={to === 'other' ? toOther : toUnitSelected?.address || ''} onChange={(e) => setToOther(e.target.value)} disabled={!editableFields || !to} readOnly={to !== 'other'} placeholder={to ? (to === 'other' ? 'Укажите адрес вручную' : 'Адрес из справочника') : 'Сначала выберите РЦ/БЕ или «Другой адрес»'}/>{to && to !== 'other' && !toUnitSelected?.address && <small className="field-hint">Адрес для выбранного подразделения не заполнен в справочнике. Обратитесь к администратору.</small>}</label></div>
+            <div className="request-field-group"><label htmlFor="request-from">Откуда <span className="required-mark">*</span></label><select id="request-from" value={from} onChange={(e) => { setFrom(e.target.value); if (e.target.value !== 'other') setFromOther('') }} disabled={!editableFields} title="Выберите БЕ отправления или вариант «Другой адрес»."><option value="">Выберите БЕ</option>{be.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select><div className="request-subfield"><div className="request-subfield-heading"><label htmlFor="request-from-address">Адрес отправления</label>{!!request && !!originAddressValue && <button type="button" className="copy-field-button" onClick={() => copyField('origin-address', originAddressValue)} title="Скопировать адрес отправления" aria-label="Скопировать адрес отправления">{copiedField === 'origin-address' ? <Check size={14}/> : <Copy size={14}/>}</button>}</div><input id="request-from-address" value={from === 'other' ? fromOther : fromUnitSelected?.address || ''} onChange={(e) => setFromOther(e.target.value)} disabled={!editableFields || !from} readOnly={from !== 'other'} placeholder={from ? (from === 'other' ? 'Укажите адрес вручную' : 'Адрес из справочника') : 'Сначала выберите БЕ или «Другой адрес»'}/>{from && from !== 'other' && !fromUnitSelected?.address && <small className="field-hint">Адрес для выбранной БЕ не заполнен в справочнике. Обратитесь к администратору.</small>}</div></div>
+            <div className="request-field-group"><label htmlFor="request-to">Куда <span className="required-mark">*</span></label><select id="request-to" value={to} onChange={(e) => { setTo(e.target.value); if (e.target.value !== 'other') setToOther(''); setSlotNo(1) }} disabled={!editableFields} title="Выберите РЦ, БЕ или вариант «Другой адрес»."><option value="">Выберите БЕ или РЦ</option>{destinations.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}<option value="other">Другой адрес</option></select><div className="request-subfield"><div className="request-subfield-heading"><label htmlFor="request-to-address">Адрес назначения</label>{!!request && !!destinationAddressValue && <button type="button" className="copy-field-button" onClick={() => copyField('destination-address', destinationAddressValue)} title="Скопировать адрес назначения" aria-label="Скопировать адрес назначения">{copiedField === 'destination-address' ? <Check size={14}/> : <Copy size={14}/>}</button>}</div><input id="request-to-address" value={to === 'other' ? toOther : toUnitSelected?.address || ''} onChange={(e) => setToOther(e.target.value)} disabled={!editableFields || !to} readOnly={to !== 'other'} placeholder={to ? (to === 'other' ? 'Укажите адрес вручную' : 'Адрес из справочника') : 'Сначала выберите РЦ/БЕ или «Другой адрес»'}/>{to && to !== 'other' && !toUnitSelected?.address && <small className="field-hint">Адрес для выбранного подразделения не заполнен в справочнике. Обратитесь к администратору.</small>}</div></div>
           </div>
 
           <div className="form-section-label">Параметры транспорта</div>
@@ -1329,8 +1359,8 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
           {request?.dispatcher_comment && <div className="request-view-meta"><span>Комментарий диспетчера</span><strong>{request.dispatcher_comment}</strong></div>}
           <div className="form-section-label">Дополнительные сведения <small className="optional-label">необязательно</small></div>
           <div className="form-grid-two request-field-grid">
-            <label className="request-field"><span>Номер задания на перевозку</span><input value={transportTaskNumber} onChange={(e) => setTransportTaskNumber(e.target.value.slice(0, 44))} maxLength={44} placeholder="До 44 символов" disabled={!editableFields}/><small className="field-hint">{transportTaskNumber.length}/44 символа</small></label>
-            <label className="request-field"><span>Комментарий</span><textarea value={requestComment} onChange={(e) => setRequestComment(e.target.value.slice(0, 320))} maxLength={320} rows={2} placeholder="До 320 символов" disabled={!editableFields}/><small className="field-hint">{requestComment.length}/320 символов</small></label>
+            <div className="request-field"><div className="request-field-heading"><label htmlFor="request-task-number">Номер задания на перевозку</label>{!!request && !!transportTaskNumber.trim() && <button type="button" className="copy-field-button" onClick={() => copyField('task-number', transportTaskNumber)} title="Скопировать номер задания на перевозку" aria-label="Скопировать номер задания на перевозку">{copiedField === 'task-number' ? <Check size={14}/> : <Copy size={14}/>}</button>}</div><input id="request-task-number" value={transportTaskNumber} onChange={(e) => setTransportTaskNumber(e.target.value.slice(0, 44))} maxLength={44} placeholder="До 44 символов" disabled={!editableFields}/><small className="field-hint">{transportTaskNumber.length}/44 символа</small></div>
+            <div className="request-field"><div className="request-field-heading"><label htmlFor="request-comment">Комментарий</label>{!!request && !!requestComment.trim() && <button type="button" className="copy-field-button" onClick={() => copyField('request-comment', requestComment)} title="Скопировать комментарий" aria-label="Скопировать комментарий">{copiedField === 'request-comment' ? <Check size={14}/> : <Copy size={14}/>}</button>}</div><textarea id="request-comment" value={requestComment} onChange={(e) => setRequestComment(e.target.value.slice(0, 320))} maxLength={320} rows={2} placeholder="До 320 символов" disabled={!editableFields}/><small className="field-hint">{requestComment.length}/320 символов</small></div>
           </div>
 
           <div className="form-section-label">Реестр к заявке <small className="optional-label">необязательно</small></div>

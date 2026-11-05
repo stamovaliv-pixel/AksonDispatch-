@@ -1140,3 +1140,62 @@ html[data-theme="dark"] .nav-link.active svg {
   .calendar-capacities > span svg { width: 12px !important; height: 12px !important; flex-basis: 12px; }
   .calendar-capacities > span b { font-size: 9px; }
 }
+
+
+/* v1.0.5 — sidebar/header alignment, tighter calendar indicators and copy controls */
+@media (min-width: 851px) {
+  /* Align the sidebar divider with the brand divider in the top bar: 32px + 154px + 17px. */
+  .sidebar { width: 203px !important; flex-basis: 203px !important; }
+}
+.calendar-capacities { gap: 4px !important; }
+.calendar-capacities > span { font-weight: 400 !important; color: var(--text) !important; }
+.calendar-capacities > span b { font-weight: 400 !important; }
+.calendar-capacities > span svg { flex: 0 0 auto; }
+.request-field-heading,
+.request-subfield-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.request-field-heading > label,
+.request-subfield-heading > label {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  color: #68768a;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.request-field-heading { margin-bottom: 0; }
+.request-subfield-heading { margin-bottom: 0; }
+.copy-field-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 25px;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: #7b8999;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.copy-field-button:hover {
+  color: #2879ad;
+  border-color: #9fc4dc;
+  background: #f0f7fc;
+}
+.copy-field-button:focus-visible { outline: 2px solid #3986bd; outline-offset: 2px; }
+html[data-theme="dark"] .copy-field-button { background: #111923; color: #a5b2c2; border-color: var(--border-strong); }
+html[data-theme="dark"] .copy-field-button:hover { color: #93c5fd; border-color: #477bb0; background: #172636; }
+.request-modal .request-subfield { gap: 7px; }
+.request-modal .request-field-heading + input,
+.request-modal .request-field-heading + textarea { margin-top: 0; }
+@media (max-width: 620px) {
+  .request-field-heading > label, .request-subfield-heading > label { font-size: 10px; }
+  .copy-field-button { flex-basis: 28px; width: 28px; height: 28px; }
+}
