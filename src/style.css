@@ -1304,3 +1304,83 @@ html[data-theme="dark"] .calendar-filters-split > label select {
     justify-self: center;
   }
 }
+
+
+/* v1.0.7 — DockSlot calendar weeks, filter-aware date counts and request-card date */
+/* The date grid is rendered as complete Monday–Sunday weeks. Dates before today
+   and the tail beyond the 30-day booking horizon are visible but subdued. */
+.calendar-day.outside-horizon {
+  background: var(--surface-soft) !important;
+  border-color: var(--border) !important;
+}
+.calendar-day.outside-horizon::before {
+  opacity: .42;
+  filter: grayscale(1);
+}
+.calendar-day.outside-horizon .calendar-day-top,
+.calendar-day.outside-horizon .calendar-capacities {
+  opacity: .46;
+}
+.calendar-day.outside-horizon .calendar-count-badge {
+  opacity: 1;
+}
+.calendar-day.outside-horizon.selected {
+  border-color: transparent !important;
+}
+
+/* Keep slot symbols neutral on empty dates. On dates with requests, show the
+   main (blue) and reserve (green) pools with a light outline around each pair. */
+.calendar-capacities > span {
+  box-sizing: border-box;
+  min-height: 19px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  transition: color .15s ease, background-color .15s ease, border-color .15s ease;
+}
+.calendar-day:not(.has-booking-count) .calendar-capacities .capacity-main,
+.calendar-day:not(.has-booking-count) .calendar-capacities .capacity-reserve {
+  color: var(--muted-2) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+}
+.calendar-day:not(.has-booking-count) .calendar-capacities .capacity-main svg,
+.calendar-day:not(.has-booking-count) .calendar-capacities .capacity-reserve svg {
+  color: var(--muted-2) !important;
+}
+.calendar-day.has-booking-count .calendar-capacities .capacity-main {
+  color: #267fae !important;
+  background: rgba(54, 145, 190, .055) !important;
+  border-color: rgba(54, 145, 190, .22) !important;
+}
+.calendar-day.has-booking-count .calendar-capacities .capacity-main svg {
+  color: #267fae !important;
+}
+.calendar-day.has-booking-count .calendar-capacities .capacity-reserve {
+  color: #218653 !important;
+  background: rgba(33, 134, 83, .055) !important;
+  border-color: rgba(33, 134, 83, .22) !important;
+}
+.calendar-day.has-booking-count .calendar-capacities .capacity-reserve svg {
+  color: #218653 !important;
+}
+html[data-theme="dark"] .calendar-day.has-booking-count .calendar-capacities .capacity-main {
+  color: #91c8e6 !important;
+  background: rgba(59, 130, 246, .10) !important;
+  border-color: rgba(109, 181, 232, .28) !important;
+}
+html[data-theme="dark"] .calendar-day.has-booking-count .calendar-capacities .capacity-main svg { color: #91c8e6 !important; }
+html[data-theme="dark"] .calendar-day.has-booking-count .calendar-capacities .capacity-reserve {
+  color: #8ed4ab !important;
+  background: rgba(16, 185, 129, .10) !important;
+  border-color: rgba(89, 194, 143, .28) !important;
+}
+html[data-theme="dark"] .calendar-day.has-booking-count .calendar-capacities .capacity-reserve svg { color: #8ed4ab !important; }
+
+/* The date in the right-hand request card uses the same visual weight as the
+   sender BE code shown in the route row. */
+.selected-request-meta .selected-request-date {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.1;
+}

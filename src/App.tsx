@@ -219,9 +219,16 @@ function App() {
     const offset = (first.getDay() + 6) % 7
     const requestGridStart = new Date(first); requestGridStart.setDate(first.getDate() - offset)
     const requestGridEnd = new Date(requestGridStart); requestGridEnd.setDate(requestGridStart.getDate() + 41)
+    // Match DockSlot's calendar geometry: start on Monday and end on Sunday,
+    // while keeping the operational window exactly today..today+29.
     const calendarStart = new Date(today)
     if (showPrevious30Days) calendarStart.setDate(calendarStart.getDate() - 30)
-    const calendarEnd = new Date(today); calendarEnd.setDate(calendarEnd.getDate() + 29)
+    const calendarStartOffset = (calendarStart.getDay() + 6) % 7
+    calendarStart.setDate(calendarStart.getDate() - calendarStartOffset)
+    const calendarEnd = new Date(today)
+    calendarEnd.setDate(calendarEnd.getDate() + 29)
+    const calendarEndOffset = (calendarEnd.getDay() + 6) % 7
+    calendarEnd.setDate(calendarEnd.getDate() + (6 - calendarEndOffset))
     const from = new Date(Math.min(requestGridStart.getTime(), calendarStart.getTime()))
     const to = new Date(Math.max(requestGridEnd.getTime(), calendarEnd.getTime()))
     const fromDate = iso(from)
@@ -683,11 +690,28 @@ function App() {
     else { setNotice(unit.is_active ? 'Элемент справочника деактивирован.' : 'Элемент справочника активирован.'); await loadData(); await loadHistory() }
   }
 
-  const calendarDays = useMemo(() => Array.from({ length: 30 }, (_, i) => {
-    const day = new Date(today)
-    day.setDate(today.getDate() + i)
-    return day
-  }), [])
+  const calendarDays = useMemo(() => {
+    // DockSlot-style full-week grid. The active booking window remains 30 days
+    // from today; preceding weekdays and the trailing days that complete the
+    // final week are rendered but visually muted in CalendarView.
+    const firstRequested = new Date(today)
+    if (showPrevious30Days) firstRequested.setDate(firstRequested.getDate() - 30)
+    const firstOffset = (firstRequested.getDay() + 6) % 7
+    const firstVisible = new Date(firstRequested)
+    firstVisible.setDate(firstVisible.getDate() - firstOffset)
+
+    const lastRequested = new Date(today)
+    lastRequested.setDate(lastRequested.getDate() + 29)
+    const lastOffset = (lastRequested.getDay() + 6) % 7
+    const daysAfterLast = 6 - lastOffset
+    const totalDays = firstOffset + (showPrevious30Days ? 60 : 30) + daysAfterLast
+
+    return Array.from({ length: totalDays }, (_, index) => {
+      const day = new Date(firstVisible)
+      day.setDate(firstVisible.getDate() + index)
+      return day
+    })
+  }, [showPrevious30Days])
 
   const visibleRequests = useMemo(() => {
     const scoped = requests.filter((request) => profile?.role !== 'customer' || request.requester_id === profile.id)
@@ -846,20 +870,33 @@ function CalendarView({ days, requests, allRequests, searchRequests, slots, occu
 
   const filteredPool = searchRequests.filter((r) => r.status !== 'cancelled' && r.status !== 'completed' && matchesRequest(r))
     .sort((a, b) => a.transport_date.localeCompare(b.transport_date) || a.slot_type.localeCompare(b.slot_type) || a.slot_number - b.slot_number)
+  // Use both the visible calendar records (which include the muted days at the
+  // start of the week) and the longer staff search horizon. Deduplicate by ID.
+  const filteredCalendarRequests = Array.from(new Map(
+    [...allRequests, ...searchRequests]
+      .filter((r) => r.status !== 'cancelled' && r.status !== 'completed' && matchesRequest(r))
+      .map((r) => [r.id, r] as const)
+  ).values())
   const matchedCount = filtersActive ? filteredPool.length : allRequests.filter((r) => r.transport_date === selectedDay && r.status !== 'cancelled').length
   const selectedDateRequests = filtersActive ? filteredPool.slice(0, 3) : allRequests.filter((r) => r.transport_date === selectedDay && r.status !== 'cancelled').sort((a, b) => a.request_no > b.request_no ? -1 : 1)
-  const previousStart = new Date(days[0]); previousStart.setDate(previousStart.getDate() - 30)
-  const previous30Days = Array.from({ length: 30 }, (_, i) => { const d = new Date(previousStart); d.setDate(previousStart.getDate() + i); return d })
+  const lastBookableDate = new Date(today)
+  lastBookableDate.setDate(lastBookableDate.getDate() + 29)
+  const maxCreateDate = iso(lastBookableDate)
   const selectedDatesSet = new Set(selectedExportDates)
   const shortDate = (d: Date) => `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`
   const dayCounts = (dateKey: string) => {
     const slotRows = slots.filter((r) => r.transport_date === dateKey)
     const occupancyRows = occupancy.filter((r) => r.transport_date === dateKey)
     const requestRows = allRequests.filter((r) => r.transport_date === dateKey && r.status !== 'cancelled')
+    const matchingRows = filtersActive ? filteredCalendarRequests.filter((r) => r.transport_date === dateKey) : []
+    const rowsForCapacity = filtersActive ? matchingRows : [...slotRows, ...occupancyRows, ...requestRows]
     const mainSet = new Set<number>()
     const reserveSet = new Set<number>()
-    ;[...slotRows, ...occupancyRows, ...requestRows].forEach((row) => (row.slot_type === 'main' ? mainSet : reserveSet).add(row.slot_number))
-    return { main: mainSet.size, reserve: reserveSet.size, total: mainSet.size + reserveSet.size, freeMain: Math.max(0, 3 - mainSet.size), freeReserve: Math.max(0, reserveSlotLimit - reserveSet.size) }
+    rowsForCapacity.forEach((row) => (row.slot_type === 'main' ? mainSet : reserveSet).add(row.slot_number))
+    // With filters, the red badge counts only matching requests, exactly like
+    // DockSlot's filtered booking counter. Without filters, show all day records.
+    const total = filtersActive ? matchingRows.length : Math.max(requestRows.length, mainSet.size + reserveSet.size)
+    return { main: mainSet.size, reserve: reserveSet.size, total, freeMain: Math.max(0, 3 - mainSet.size), freeReserve: Math.max(0, reserveSlotLimit - reserveSet.size) }
   }
   const toggleExportDate = (date: string) => setSelectedExportDates((old) => old.includes(date) ? old.filter((d) => d !== date) : [...old, date])
   const renderDay = (day: Date, outside = false, compact = false, stackIndex = 0) => {
@@ -867,10 +904,11 @@ function CalendarView({ days, requests, allRequests, searchRequests, slots, occu
     const counts = dayCounts(key)
     const unavailable = isCustomer && key < minCreateDate
     const pastDay = key < iso(today)
+    const outsideHorizon = key > maxCreateDate
     // Later rows must paint above the row before them (badge overhangs upward);
     // earlier columns must paint above cells to their right (badge overhangs right).
     const stackZ = Math.floor(stackIndex / 7) * 10 + (6 - (stackIndex % 7)) + 1
-    return <article key={key} role="button" tabIndex={0} aria-label={`Открыть заявки за ${dateLabel(key)}`} onClick={() => setSelectedDay(key)} onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedDay(key) } }} style={{ zIndex: stackZ }} className={`calendar-day ${counts.total > 0 ? 'has-booking-count' : ''} ${pastDay ? 'past-day' : ''} ${compact ? 'calendar-day-compact' : ''} ${outside ? 'outside' : ''} ${selectedDay === key ? 'selected' : ''} ${key === iso(today) ? 'today' : ''} ${unavailable ? 'booking-unavailable' : ''}`}>
+    return <article key={key} role="button" tabIndex={0} aria-label={`Открыть заявки за ${dateLabel(key)}`} onClick={() => setSelectedDay(key)} onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedDay(key) } }} style={{ zIndex: stackZ }} className={`calendar-day ${counts.total > 0 ? 'has-booking-count' : ''} ${pastDay ? 'past-day' : ''} ${outsideHorizon ? 'outside-horizon' : ''} ${compact ? 'calendar-day-compact' : ''} ${outside ? 'outside' : ''} ${selectedDay === key ? 'selected' : ''} ${key === iso(today) ? 'today' : ''} ${unavailable ? 'booking-unavailable' : ''}`}>
       <div className="calendar-day-top"><button type="button" className="calendar-date-button" onClick={(event) => { event.stopPropagation(); setSelectedDay(key) }} title={`Показать заявки за ${dateLabel(key)}`}><span className="calendar-date-full">{shortDate(day)}</span></button>{showExportTools && <label className="calendar-export-check" onClick={(event) => event.stopPropagation()} title={`Включить ${dateLabel(key)} в выгрузку`}><input type="checkbox" checked={selectedDatesSet.has(key)} onClick={(event) => event.stopPropagation()} onChange={() => toggleExportDate(key)}/><span/></label>}</div>
       {counts.total > 0 && <span className="calendar-count-badge" aria-label={`Заявок: ${counts.total}`} title={`Заявок: ${counts.total}`}>{counts.total > 99 ? '99+' : counts.total}</span>}
       <div className="calendar-capacities"><span className="capacity-main" title={`Основные слоты: свободно ${counts.freeMain} из 3`}><Warehouse size={12}/><b>{counts.freeMain}</b></span><span className="capacity-reserve" title={`Резервные слоты: свободно ${counts.freeReserve} из ${reserveSlotLimit}`}><MapPin size={12}/><b>{counts.freeReserve}</b></span></div>
@@ -891,9 +929,8 @@ function CalendarView({ days, requests, allRequests, searchRequests, slots, occu
         {filtersActive && <button className="icon-button small" title="Сбросить фильтры календаря" onClick={() => { setCustomerFilter(''); setFromFilter(''); setToFilter(''); setCargoFilter('all'); setCapacityFilter('all') }}><X size={14}/></button>}
         <span className="calendar-filter-count">Найдено: <b>{matchedCount}</b></span>
       </div>}
-      {showPrevious30Days && <><div className="calendar-period-caption">Предыдущие 30 дней</div><div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div><div className="calendar-grid calendar-previous-grid">{Array.from({ length: (previousStart.getDay() + 6) % 7 }, (_, i) => <span key={`pad-${i}`} className="calendar-grid-pad"/>)}{previous30Days.map((day, index) => renderDay(day, true, true, ((previousStart.getDay() + 6) % 7) + index))}</div></>}
       <div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map((d) => <div key={d}>{d}</div>)}</div>
-      <div className="calendar-grid">{Array.from({ length: (days[0].getDay() + 6) % 7 }, (_, i) => <span key={`forward-pad-${i}`} className="calendar-grid-pad"/>)}{days.map((day, index) => renderDay(day, false, false, ((days[0].getDay() + 6) % 7) + index))}</div>
+      <div className="calendar-grid">{days.map((day, index) => renderDay(day, false, false, index))}</div>
       <div className="calendar-foot"><span><span className="online-dot"/> Заявок за выбранный период: {allRequests.filter((r) => r.status !== 'cancelled').length}</span><div className="calendar-foot-legend"><span><Warehouse size={13}/> Основные слоты — направление в РЦ</span><span><MapPin size={13}/> Резервные слоты — другие адреса</span></div></div>
     </section>
     <section className="surface-card selected-day-card">
@@ -904,10 +941,10 @@ function CalendarView({ days, requests, allRequests, searchRequests, slots, occu
           const canOpen = !isCustomer || own
           const originUnit = units.find((u) => u.id === request.from_unit_id)
           const destUnit = units.find((u) => u.id === request.to_unit_id)
-          return <article className="selected-request-card" key={request.id}>{canOpen && <button type="button" className="icon-button small selected-request-view" onClick={() => onOpen(request)} title="Открыть заявку"><Eye size={14}/></button>}<div className="selected-request-top"><strong>Заявка №{request.request_no}</strong><StatusBadge status={request.status}/></div><button type="button" className="selected-request-route" disabled={!canOpen} onClick={() => canOpen && onOpen(request)}><span>{resolveUnit(units, request.from_unit_id, request.from_other_address)}</span><ArrowRight size={13}/><span>{resolveUnit(units, request.to_unit_id, request.to_other_address)}</span></button><div className="selected-request-addresses"><small>Адрес отправления: {request.from_unit_id ? originUnit?.address || 'Не указан в справочнике' : request.from_other_address || '—'}</small><small>Адрес назначения: {request.to_unit_id ? destUnit?.address || 'Не указан в справочнике' : request.to_other_address || '—'}</small></div><div className="selected-request-meta"><span>{dateLabel(request.transport_date, { day: 'numeric', month: 'short' })}</span><span>{request.slot_type === 'main' ? <Warehouse size={12}/> : <MapPin size={12}/>} {request.slot_type === 'main' ? 'Основной' : 'Резервный'} слот {request.slot_number}</span><span>{request.capacity_tons} т</span>{!isCustomer && <span>{request.profiles?.username || 'Заказчик'}</span>}</div>{((request.registry_file_path && (!isCustomer || own)) || (isCustomer && own && request.status === 'created')) && <div className="selected-request-actions">{request.registry_file_path && (!isCustomer || own) && <button className="icon-button small" onClick={() => onDownloadRegistry(request.registry_file_path, request.registry_file_name)} title="Скачать вложенный реестр"><Download size={14}/></button>}{isCustomer && own && request.status === 'created' && <button className="icon-button small danger-icon" onClick={() => onCancel(request)} title="Отменить заявку"><Ban size={14}/></button>}</div>}</article>
-        }) : <div className="selected-day-empty"><CalendarDays size={24}/><strong>{filtersActive ? 'Совпадений не найдено' : 'На выбранный день заявок нет'}</strong><span>{filtersActive ? 'Измените параметры фильтра.' : (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 ? 'Можно создать новую заявку на этот день.' : 'Свободных основных и резервных слотов на этот день нет.'}</span>{!filtersActive && canCreate && selectedDay >= minCreateDate && (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 && <button className="button button-primary button-compact" onClick={() => onCreate(1, selectedDay)}><Plus size={14}/> Создать заявку</button>}</div>}
+          return <article className="selected-request-card" key={request.id}>{canOpen && <button type="button" className="icon-button small selected-request-view" onClick={() => onOpen(request)} title="Открыть заявку"><Eye size={14}/></button>}<div className="selected-request-top"><strong>Заявка №{request.request_no}</strong><StatusBadge status={request.status}/></div><button type="button" className="selected-request-route" disabled={!canOpen} onClick={() => canOpen && onOpen(request)}><span>{resolveUnit(units, request.from_unit_id, request.from_other_address)}</span><ArrowRight size={13}/><span>{resolveUnit(units, request.to_unit_id, request.to_other_address)}</span></button><div className="selected-request-addresses"><small>Адрес отправления: {request.from_unit_id ? originUnit?.address || 'Не указан в справочнике' : request.from_other_address || '—'}</small><small>Адрес назначения: {request.to_unit_id ? destUnit?.address || 'Не указан в справочнике' : request.to_other_address || '—'}</small></div><div className="selected-request-meta"><span className="selected-request-date">{dateLabel(request.transport_date, { day: 'numeric', month: 'short' })}</span><span>{request.slot_type === 'main' ? <Warehouse size={12}/> : <MapPin size={12}/>} {request.slot_type === 'main' ? 'Основной' : 'Резервный'} слот {request.slot_number}</span><span>{request.capacity_tons} т</span>{!isCustomer && <span>{request.profiles?.username || 'Заказчик'}</span>}</div>{((request.registry_file_path && (!isCustomer || own)) || (isCustomer && own && request.status === 'created')) && <div className="selected-request-actions">{request.registry_file_path && (!isCustomer || own) && <button className="icon-button small" onClick={() => onDownloadRegistry(request.registry_file_path, request.registry_file_name)} title="Скачать вложенный реестр"><Download size={14}/></button>}{isCustomer && own && request.status === 'created' && <button className="icon-button small danger-icon" onClick={() => onCancel(request)} title="Отменить заявку"><Ban size={14}/></button>}</div>}</article>
+        }) : <div className="selected-day-empty"><CalendarDays size={24}/><strong>{filtersActive ? 'Совпадений не найдено' : 'На выбранный день заявок нет'}</strong><span>{filtersActive ? 'Измените параметры фильтра.' : (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 ? 'Можно создать новую заявку на этот день.' : 'Свободных основных и резервных слотов на этот день нет.'}</span>{!filtersActive && canCreate && selectedDay >= minCreateDate && selectedDay <= maxCreateDate && (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 && <button className="button button-primary button-compact" onClick={() => onCreate(1, selectedDay)}><Plus size={14}/> Создать заявку</button>}</div>}
       </div>
-      {!filtersActive && selectedDateRequests.length > 0 && canCreate && selectedDay >= minCreateDate && (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 && <button className="button button-outline button-compact selected-day-create" onClick={() => onCreate(1, selectedDay)}><Plus size={14}/> Добавить заявку на этот день</button>}
+      {!filtersActive && selectedDateRequests.length > 0 && canCreate && selectedDay >= minCreateDate && selectedDay <= maxCreateDate && (dayCounts(selectedDay).freeMain + dayCounts(selectedDay).freeReserve) > 0 && <button className="button button-outline button-compact selected-day-create" onClick={() => onCreate(1, selectedDay)}><Plus size={14}/> Добавить заявку на этот день</button>}
       <div className="selected-day-tip"><CircleHelp size={15}/>{isCustomer ? `Отображаются только ваши заявки. Адреса выбранных БЕ и РЦ берутся из справочника. Создание доступно с ${dateLabel(minCreateDate)}.` : filtersActive ? 'Поиск по заказчику, отправлению и назначению охватывает ближайшие три отчётных месяца. Завершённые и отменённые заявки не показываются.' : 'Для каждого дня свободные основные и резервные слоты рассчитываются независимо.'}</div>
     </section>
   </div>
