@@ -1595,3 +1595,28 @@ html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities
   background: var(--surface-soft);
 }
 .push-instruction-card { margin-top: 18px; }
+
+
+/* Notification panel polish v1.0.12 */
+.notification-panel-head { gap: 14px; }
+.notification-panel-actions { gap: 10px; }
+.notification-panel-head .notification-mark-all {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
+  color: var(--muted); background: var(--surface); font-size: 10px;
+  font-weight: 650; line-height: 1; white-space: nowrap; transition: .18s ease;
+}
+.notification-panel-head .notification-mark-all:not(:disabled):hover {
+  color: var(--primary); border-color: color-mix(in srgb, var(--primary) 28%, var(--border));
+  background: color-mix(in srgb, var(--primary) 5%, var(--surface));
+}
+.notification-panel-head .notification-mark-all:disabled { opacity: .38; cursor: default; }
+.notification-panel-head .notification-panel-close {
+  width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center;
+  padding: 0; border: 0; border-radius: 50%; color: var(--muted-2);
+  background: transparent; cursor: pointer; transition: .18s ease;
+}
+.notification-panel-head .notification-panel-close:hover {
+  color: var(--text); background: var(--surface-soft);
+}
+.notification-enable { min-height: 31px; padding: 7px 11px; border-radius: 8px; font-size: 10px; }
