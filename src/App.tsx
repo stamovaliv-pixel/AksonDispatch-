@@ -860,7 +860,7 @@ function App() {
     <header className="app-topbar">
       <button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={19} /></button>
       <div className="brand-area"><img src={theme === 'dark' ? '/assets/logistic-logo-dark.svg' : '/assets/logistic-logo.svg'} alt="Аксон Логистика" /><span className="brand-divider" /><div className="brand-product"><strong>Аксон Диспетчерская</strong><small>портал заказа транспорта</small></div></div>
-      <div className="topbar-right"><div className="today-chip"><CalendarDays size={15} /><span>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</span></div><button className="icon-button" title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><div className="notification-anchor"><button className="icon-button notification-bell" title="Уведомления" aria-label="Уведомления" onClick={() => setNotificationPanelOpen((open) => !open)}><Bell size={18} />{notifications.some((item) => !item.read_at) && <span className="notification-count">{notifications.filter((item) => !item.read_at).length > 99 ? '99+' : notifications.filter((item) => !item.read_at).length}</span>}</button>{notificationPanelOpen && <div className="notification-panel"><div className="notification-panel-head"><strong>Уведомления</strong><button type="button" onClick={markAllNotificationsRead} disabled={!notifications.some((item) => !item.read_at)}>Прочитать все</button></div><div className="notification-list">{notifications.length ? notifications.slice(0, 15).map((item) => <button type="button" key={item.id} className={`notification-item ${item.read_at ? '' : 'unread'}`} onClick={() => { void markNotificationRead(item); setNotificationPanelOpen(false); setView('requests') }}><span className="notification-item-dot"/><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.body}</span><small>{new Date(item.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></span></button>) : <div className="notification-empty">Пока нет уведомлений</div>}</div><div className="notification-panel-foot"><span>{pushEnabled ? 'Push включены на этом устройстве' : 'Push-уведомления отключены'}</span><button type="button" className="button button-primary notification-enable" onClick={() => void enableBrowserPush()} disabled={pushBusy || pushEnabled}>{pushBusy ? 'Подключаем…' : pushEnabled ? 'Включено' : 'Включить push'}</button></div></div>}</div><div className="profile-chip"><div className="avatar">{profile.username.slice(0, 1).toUpperCase()}</div><div><strong>{profile.username}</strong><small>{roleNames[profile.role]}</small></div><ChevronDown size={14} /></div><button className="icon-button logout-button" title="Выйти" onClick={signOut}><LogOut size={17} /></button></div>
+      <div className="topbar-right"><div className="today-chip"><CalendarDays size={15} /><span>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</span></div><button className="icon-button" title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><div className="notification-anchor"><button className="icon-button notification-bell" title="Уведомления" aria-label="Уведомления" onClick={() => setNotificationPanelOpen((open) => !open)}><Bell size={18} />{notifications.some((item) => !item.read_at) && <span className="notification-count">{notifications.filter((item) => !item.read_at).length > 99 ? '99+' : notifications.filter((item) => !item.read_at).length}</span>}</button>{notificationPanelOpen && <div className="notification-panel"><div className="notification-panel-head"><strong>Уведомления</strong><div className="notification-panel-actions"><button type="button" onClick={markAllNotificationsRead} disabled={!notifications.some((item) => !item.read_at)}>Прочитать все</button><button type="button" className="notification-panel-close" aria-label="Закрыть окно уведомлений" title="Закрыть" onClick={() => setNotificationPanelOpen(false)}><X size={16}/></button></div></div><div className="notification-list">{notifications.length ? notifications.slice(0, 15).map((item) => <button type="button" key={item.id} className={`notification-item ${item.read_at ? '' : 'unread'}`} onClick={() => { void markNotificationRead(item); setNotificationPanelOpen(false); setView('requests') }}><span className="notification-item-dot"/><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.body}</span><small>{new Date(item.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></span></button>) : <div className="notification-empty">Пока нет уведомлений</div>}</div><div className="notification-panel-foot"><span>{pushEnabled ? 'Push включены на этом устройстве' : 'Push-уведомления отключены'}</span><button type="button" className="button button-primary notification-enable" onClick={() => void enableBrowserPush()} disabled={pushBusy || pushEnabled}>{pushBusy ? 'Подключаем…' : pushEnabled ? 'Включено' : 'Включить push'}</button></div></div>}</div><div className="profile-chip"><div className="avatar">{profile.username.slice(0, 1).toUpperCase()}</div><div><strong>{profile.username}</strong><small>{roleNames[profile.role]}</small></div><ChevronDown size={14} /></div><button className="icon-button logout-button" title="Выйти" onClick={signOut}><LogOut size={17} /></button></div>
     </header>
     <div className="workspace">
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
@@ -956,6 +956,36 @@ function InstructionsView({ role }: { role: Role }) {
         </div>
       </section>
     })}
+    <section className="surface-card instruction-card push-instruction-card">
+      <div className="instruction-card-heading"><div className="instruction-role-icon"><Bell size={19}/></div><div><h2>Как включить Push-уведомления</h2><p>Подключение системных уведомлений на компьютере или телефоне</p></div></div>
+      <div className="instruction-sections">
+        <section className="instruction-section"><h3>Подключение на устройстве</h3><ul>
+          <li>Откройте Dispatch в обычном окне браузера и войдите под своей учётной записью.</li>
+          <li>Нажмите на колокольчик в верхней панели и выберите «Включить push».</li>
+          <li>Когда браузер запросит разрешение на уведомления, нажмите «Разрешить».</li>
+          <li>Дождитесь подтверждения подключения. В окне уведомлений появится статус «Push включены на этом устройстве».</li>
+          <li>Для проверки попросите администратора или диспетчера отправить вам тестовое штатное уведомление.</li>
+        </ul></section>
+        <section className="instruction-section"><h3>Подключение на других устройствах</h3><ul>
+          <li>Подключение выполняется отдельно на каждом компьютере, телефоне и в каждом браузере.</li>
+          <li>Например, Chrome на рабочем компьютере и Edge на ноутбуке — это две отдельные подписки.</li>
+          <li>При смене браузера, очистке данных сайта или сбросе разрешений подключите Push повторно.</li>
+          <li>Не используйте режим инкогнито для постоянной работы: браузер может не сохранить подписку.</li>
+        </ul></section>
+        <section className="instruction-section"><h3>Если уведомления не появляются</h3><ul>
+          <li>Проверьте разрешение «Уведомления» для сайта Dispatch в настройках браузера.</li>
+          <li>В Windows откройте «Параметры» → «Система» → «Уведомления» и разрешите уведомления для Chrome или Edge.</li>
+          <li>Проверьте, что режим «Не беспокоить» или «Фокусировка» не блокирует баннеры.</li>
+          <li>Если Push включён, но уведомление не пришло, обратитесь к администратору и сообщите время события.</li>
+        </ul></section>
+        <section className="instruction-section"><h3>Важная информация</h3><ul>
+          <li>Разрешение браузера и подключение Push в Dispatch — обязательные шаги. Одного входа в систему недостаточно.</li>
+          <li>Уведомления отправляются только пользователям, которым адресовано конкретное событие.</li>
+          <li>Подписка привязана к пользователю и конкретному браузеру на конкретном устройстве.</li>
+          <li>Не передавайте никому пароли, ключи или секреты Supabase. Для подключения Push они не нужны.</li>
+        </ul></section>
+      </div>
+    </section>
   </div>
 }
 

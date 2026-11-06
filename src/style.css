@@ -1570,3 +1570,28 @@ html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities
   .notification-panel { position: fixed; top: 67px; right: 8px; width: calc(100vw - 16px); max-height: calc(100vh - 85px); }
   .notification-toast { top: 72px; right: 10px; }
 }
+
+
+/* Push notification panel: explicit close control */
+.notification-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.notification-panel-head .notification-panel-close {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--surface);
+  cursor: pointer;
+}
+.notification-panel-head .notification-panel-close:hover {
+  color: var(--text);
+  background: var(--surface-soft);
+}
+.push-instruction-card { margin-top: 18px; }
