@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow"><title>Настройка push — Аксон Диспетчерская</title>
+  <style>
+    body{font:15px/1.5 Inter,Arial,sans-serif;background:#f3f6f9;color:#1e293b;margin:0;padding:32px}.card{max-width:760px;margin:30px auto;background:#fff;border:1px solid #e3e9ef;border-radius:16px;padding:28px;box-shadow:0 8px 28px #1f33490e}h1{font-size:22px}p{color:#667085}.row{margin:18px 0}label{display:block;font-weight:700;margin-bottom:6px}textarea{width:100%;min-height:68px;box-sizing:border-box;padding:10px;border:1px solid #d5dee8;border-radius:8px;resize:vertical;font:12px monospace}button{border:0;border-radius:9px;background:#e31e24;color:#fff;padding:11px 16px;font-weight:700;cursor:pointer}button.secondary{background:#475467;margin-left:8px}.note{font-size:13px;color:#667085}
+  </style>
+</head>
+<body><main class="card">
+  <h1>Ключи браузерных уведомлений</h1>
+  <p>Эта страница создаёт ключи прямо в вашем браузере. Закройте её после копирования. Не публикуйте закрытый VAPID-ключ.</p>
+  <button id="generate">Сгенерировать ключи</button>
+  <div id="result" hidden>
+    <div class="row"><label for="public">VAPID_PUBLIC_KEY (также добавить в Vercel как VITE_VAPID_PUBLIC_KEY)</label><textarea id="public" readonly></textarea><button class="secondary" data-copy="public">Копировать</button></div>
+    <div class="row"><label for="private">VAPID_PRIVATE_KEY (только Supabase Edge Function Secret)</label><textarea id="private" readonly></textarea><button class="secondary" data-copy="private">Копировать</button></div>
+    <div class="row"><label for="webhook">DISPATCH_WEBHOOK_SECRET (Supabase Secret и заголовок Database Webhook)</label><textarea id="webhook" readonly></textarea><button class="secondary" data-copy="webhook">Копировать</button></div>
+    <p class="note">После настройки ключи не нужно генерировать повторно. Если сгенерировать новую пару, push-подписки пользователей придётся включить заново.</p>
+  </div>
+</main>
+<script>
+const b64 = (bytes) => { let s=''; bytes.forEach(v=>s+=String.fromCharCode(v)); return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'') }
+document.getElementById('generate').addEventListener('click', async () => {
+  const pair = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify'])
+  const jwk = await crypto.subtle.exportKey('jwk',pair.privateKey)
+  const publicBytes = new Uint8Array(65); publicBytes[0]=4
+  const decode=(v)=>Uint8Array.from(atob(v.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-v.length%4)%4)),c=>c.charCodeAt(0))
+  const x=decode(jwk.x)
+  const y=decode(jwk.y)
+  publicBytes.set(x,1); publicBytes.set(y,33)
+  document.getElementById('public').value=b64(publicBytes)
+  document.getElementById('private').value=jwk.d
+  const random=new Uint8Array(32); crypto.getRandomValues(random)
+  document.getElementById('webhook').value=b64(random)
+  document.getElementById('result').hidden=false
+})
+document.querySelectorAll('[data-copy]').forEach(button=>button.addEventListener('click',async()=>{const value=document.getElementById(button.dataset.copy).value;await navigator.clipboard.writeText(value);button.textContent='Скопировано';setTimeout(()=>button.textContent='Копировать',1500)}))
+</script></body></html>
