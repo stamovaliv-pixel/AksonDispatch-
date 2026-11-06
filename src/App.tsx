@@ -5,7 +5,7 @@ import {
   CircleHelp, FileSpreadsheet, Filter, LayoutDashboard, LogOut, Menu, Moon,
   Package, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sun, Truck, Users,
   Warehouse, X, Pencil, Ban, Eye, Layers3, History as HistoryIcon, Save,
-  SlidersHorizontal, Clock3, Upload, Download, FileText, MapPin, CalendarClock, Copy, BookOpen
+  SlidersHorizontal, Clock3, Upload, Download, FileText, MapPin, CalendarClock, Copy, BookOpen, Bell
 } from 'lucide-react'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRequest } from './types'
@@ -23,6 +23,9 @@ type RoleLimitValues = Record<Role, string>
 type SlotOccupancy = { transport_date: string; slot_number: number; slot_type: 'main' | 'reserve' }
 type CalendarSlot = { transport_date: string; slot_number: number; slot_type: 'main' | 'reserve'; status: RequestStatus; from_be_code: string }
 type ReportRow = { section: 'summary' | 'customer' | 'from' | 'to' | 'cargo' | 'closing_speed' | 'status'; label: string; request_count: number; average_close_days: number | null; closed_count: number; open_count: number }
+type UserNotification = { id: string; user_id: string; request_id: string | null; notification_type: string; title: string; body: string; created_at: string; read_at: string | null }
+const VAPID_PUBLIC_KEY = (import.meta.env.VITE_VAPID_PUBLIC_KEY || '') as string
+const base64UrlToBytes = (value: string) => { const padded = value + '='.repeat((4 - value.length % 4) % 4); const base64 = padded.replace(/-/g, '+').replace(/_/g, '/'); const raw = window.atob(base64); return Uint8Array.from(raw, (char) => char.charCodeAt(0)) }
 
 const roleNames: Record<Role, string> = { customer: 'Заказчик', dispatcher: 'Диспетчер', utz: 'УТЗ', admin: 'Администратор' }
 const roleDescriptions: Record<Role, string> = {
@@ -47,6 +50,7 @@ function App() {
   const [session, setSession] = useState<any>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const realtimeRefreshTimer = useRef<number | null>(null)
+  const notificationToastTimer = useRef<number | null>(null)
   const loadedProfileIdRef = useRef<string | null>(null)
   const [units, setUnits] = useState<BusinessUnit[]>([])
   const [requests, setRequests] = useState<TransportRequest[]>([])
@@ -67,6 +71,11 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [notifications, setNotifications] = useState<UserNotification[]>([])
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false)
+  const [notificationToast, setNotificationToast] = useState<UserNotification | null>(null)
+  const [pushEnabled, setPushEnabled] = useState(false)
+  const [pushBusy, setPushBusy] = useState(false)
   const [login, setLogin] = useState('')
   const [password, setPassword] = useState('')
   const [loginBusy, setLoginBusy] = useState(false)
@@ -194,6 +203,48 @@ function App() {
     }
   }, [profile?.id, month.getTime(), showPrevious30Days])
   useEffect(() => {
+    if (!profile || !supabase) { setNotifications([]); setPushEnabled(false); return }
+    const client = supabase
+    let active = true
+    void loadNotifications()
+    const channel = client
+      .channel(`user-notifications:${profile.id}`, { config: { private: true } })
+      .on('broadcast', { event: 'user-notification-created' }, async (message) => {
+        const id = String((message as any)?.payload?.id || '')
+        if (!id || !active) return
+        const { data } = await client.from('user_notifications').select('*').eq('id', id).maybeSingle()
+        if (!active || !data) return
+        setNotifications((current) => [data as UserNotification, ...current.filter((item) => item.id !== id)].slice(0, 30))
+        setNotificationToast(data as UserNotification)
+        if (notificationToastTimer.current !== null) window.clearTimeout(notificationToastTimer.current)
+        notificationToastTimer.current = window.setTimeout(() => setNotificationToast(null), 6500)
+      })
+      .subscribe()
+
+    // Re-associate an existing browser subscription with the currently signed-in account.
+    void (async () => {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window) || !VAPID_PUBLIC_KEY) return
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js')
+        const existing = await registration.pushManager.getSubscription()
+        if (!existing || !active) return
+        const keys = existing.toJSON().keys || {}
+        if (!keys.p256dh || !keys.auth) return
+        const { error: rpcError } = await client.rpc('register_push_subscription', {
+          p_endpoint: existing.endpoint, p_p256dh: keys.p256dh, p_auth: keys.auth
+        })
+        if (!rpcError && active) setPushEnabled(Notification.permission === 'granted')
+      } catch (e) { console.warn('Не удалось восстановить push-подписку:', e) }
+    })()
+
+    return () => {
+      active = false
+      if (notificationToastTimer.current !== null) window.clearTimeout(notificationToastTimer.current)
+      notificationToastTimer.current = null
+      void client.removeChannel(channel)
+    }
+  }, [profile?.id])
+  useEffect(() => {
     if (!profile) return
     void loadSettings()
     if (profile.role === 'admin' || profile.role === 'dispatcher') void loadPeople()
@@ -208,6 +259,59 @@ function App() {
       void loadReports()
     }
   }, [profile, view])
+
+  async function loadNotifications() {
+    if (!supabase || !profile) return
+    const { data, error: notificationError } = await supabase
+      .from('user_notifications').select('*').order('created_at', { ascending: false }).limit(30)
+    if (!notificationError && data) setNotifications(data as UserNotification[])
+  }
+
+  async function markNotificationRead(notification: UserNotification) {
+    if (!supabase || notification.read_at) return
+    const readAt = new Date().toISOString()
+    const { error: updateError } = await supabase.from('user_notifications').update({ read_at: readAt }).eq('id', notification.id)
+    if (!updateError) setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, read_at: readAt } : item))
+  }
+
+  async function markAllNotificationsRead() {
+    if (!supabase) return
+    const unreadIds = notifications.filter((item) => !item.read_at).map((item) => item.id)
+    if (!unreadIds.length) return
+    const readAt = new Date().toISOString()
+    const { error: updateError } = await supabase.from('user_notifications').update({ read_at: readAt }).in('id', unreadIds)
+    if (!updateError) setNotifications((current) => current.map((item) => ({ ...item, read_at: item.read_at || readAt })))
+  }
+
+  async function enableBrowserPush() {
+    if (!supabase || !profile) return
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      setNotice('Этот браузер не поддерживает push-уведомления. Используйте актуальную версию Chrome или Edge.')
+      return
+    }
+    if (!VAPID_PUBLIC_KEY) {
+      setNotice('Push-уведомления ещё не настроены: добавьте VITE_VAPID_PUBLIC_KEY в переменные Vercel и выполните повторный деплой.')
+      return
+    }
+    setPushBusy(true)
+    try {
+      const permission = await Notification.requestPermission()
+      if (permission !== 'granted') throw new Error('Разрешение на уведомления не предоставлено в настройках браузера.')
+      const registration = await navigator.serviceWorker.register('/sw.js')
+      let subscription = await registration.pushManager.getSubscription()
+      if (!subscription) subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(VAPID_PUBLIC_KEY) })
+      const keys = subscription.toJSON().keys || {}
+      if (!keys.p256dh || !keys.auth) throw new Error('Браузер не вернул ключи push-подписки. Повторите включение.')
+      const { error: rpcError } = await supabase.rpc('register_push_subscription', {
+        p_endpoint: subscription.endpoint, p_p256dh: keys.p256dh, p_auth: keys.auth
+      })
+      if (rpcError) throw rpcError
+      setPushEnabled(true)
+      setNotice('Браузерные push-уведомления включены на этом устройстве.')
+    } catch (e) {
+      setNotice(errorText(e))
+    } finally { setPushBusy(false) }
+  }
 
   async function loadData(targetMonth: Date = month) {
     if (!supabase || !profile) return
@@ -756,7 +860,7 @@ function App() {
     <header className="app-topbar">
       <button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={19} /></button>
       <div className="brand-area"><img src={theme === 'dark' ? '/assets/logistic-logo-dark.svg' : '/assets/logistic-logo.svg'} alt="Аксон Логистика" /><span className="brand-divider" /><div className="brand-product"><strong>Аксон Диспетчерская</strong><small>портал заказа транспорта</small></div></div>
-      <div className="topbar-right"><div className="today-chip"><CalendarDays size={15} /><span>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</span></div><button className="icon-button" title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><div className="profile-chip"><div className="avatar">{profile.username.slice(0, 1).toUpperCase()}</div><div><strong>{profile.username}</strong><small>{roleNames[profile.role]}</small></div><ChevronDown size={14} /></div><button className="icon-button logout-button" title="Выйти" onClick={signOut}><LogOut size={17} /></button></div>
+      <div className="topbar-right"><div className="today-chip"><CalendarDays size={15} /><span>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</span></div><button className="icon-button" title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><div className="notification-anchor"><button className="icon-button notification-bell" title="Уведомления" aria-label="Уведомления" onClick={() => setNotificationPanelOpen((open) => !open)}><Bell size={18} />{notifications.some((item) => !item.read_at) && <span className="notification-count">{notifications.filter((item) => !item.read_at).length > 99 ? '99+' : notifications.filter((item) => !item.read_at).length}</span>}</button>{notificationPanelOpen && <div className="notification-panel"><div className="notification-panel-head"><strong>Уведомления</strong><button type="button" onClick={markAllNotificationsRead} disabled={!notifications.some((item) => !item.read_at)}>Прочитать все</button></div><div className="notification-list">{notifications.length ? notifications.slice(0, 15).map((item) => <button type="button" key={item.id} className={`notification-item ${item.read_at ? '' : 'unread'}`} onClick={() => { void markNotificationRead(item); setNotificationPanelOpen(false); setView('requests') }}><span className="notification-item-dot"/><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.body}</span><small>{new Date(item.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></span></button>) : <div className="notification-empty">Пока нет уведомлений</div>}</div><div className="notification-panel-foot"><span>{pushEnabled ? 'Push включены на этом устройстве' : 'Push-уведомления отключены'}</span><button type="button" className="button button-primary notification-enable" onClick={() => void enableBrowserPush()} disabled={pushBusy || pushEnabled}>{pushBusy ? 'Подключаем…' : pushEnabled ? 'Включено' : 'Включить push'}</button></div></div>}</div><div className="profile-chip"><div className="avatar">{profile.username.slice(0, 1).toUpperCase()}</div><div><strong>{profile.username}</strong><small>{roleNames[profile.role]}</small></div><ChevronDown size={14} /></div><button className="icon-button logout-button" title="Выйти" onClick={signOut}><LogOut size={17} /></button></div>
     </header>
     <div className="workspace">
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
@@ -786,6 +890,7 @@ function App() {
     </div>
     {editingPerson && <UserEditModal person={editingPerson} units={units} draft={userEditDraft} setDraft={setUserEditDraft} onSubmit={saveUserEdit} onClose={() => setEditingPerson(null)} saving={saving} currentUserId={profile.id} />}
     {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} onUploadRegistry={uploadRequestRegistry} saving={saving} registryTemplateName={registryTemplateName} registryTemplatePath={registryTemplatePath} reserveSlotLimit={Number(reserveSlotLimit) || 0} onDownloadTemplate={downloadRegistryTemplate} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
+    {notificationToast && <div className="notification-toast" role="status"><div className="notification-toast-icon"><Bell size={17}/></div><div className="notification-toast-copy"><strong>{notificationToast.title}</strong><span>{notificationToast.body}</span></div><button type="button" aria-label="Закрыть уведомление" onClick={() => setNotificationToast(null)}><X size={15}/></button></div>}
     {loading && <div className="loading-pill"><span className="spinner" /> Обновляем данные…</div>}
   </div>
 }
