@@ -537,8 +537,10 @@ function App() {
     const extension = file.name.split('.').pop()?.toLowerCase() || ''
     if (!['xlsx', 'xls', 'csv', 'ods'].includes(extension)) throw new Error('Реестр должен быть в формате XLSX, XLS, CSV или ODS.')
     if (file.size > 20 * 1024 * 1024) throw new Error('Размер реестра не должен превышать 20 МБ.')
-    const safeName = file.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(-120) || `registry.${extension}`
-    const storagePath = `requests/${request.id}/${crypto.randomUUID()}-${safeName}`
+    // Supabase Storage object keys must use ASCII-safe characters. Keep the
+    // original filename in registry_file_name, but use a UUID + validated
+    // extension as the physical object name.
+    const storagePath = `requests/${request.id}/${crypto.randomUUID()}.${extension}`
     const { error: uploadError } = await supabase.storage.from('dispatch-files').upload(storagePath, file, { upsert: false, contentType: file.type || 'application/octet-stream' })
     if (uploadError) throw uploadError
     const { data: attachedRow, error: attachError } = await supabase.from('transport_requests')
@@ -654,8 +656,9 @@ function App() {
         if (!['xlsx', 'xls', 'csv', 'ods'].includes(extension)) registryWarning = 'Формат реестра должен быть XLSX, XLS, CSV или ODS.'
         else if (file.size > 20 * 1024 * 1024) registryWarning = 'Размер реестра не должен превышать 20 МБ.'
         else {
-          const safeName = file.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(-120) || `registry.${extension}`
-          const storagePath = `requests/${id}/${crypto.randomUUID()}-${safeName}`
+          // Use an ASCII-only Storage key; preserve the original filename in
+          // registry_file_name for display and download.
+          const storagePath = `requests/${id}/${crypto.randomUUID()}.${extension}`
           const { error: uploadError } = await supabase.storage.from('dispatch-files').upload(storagePath, file, { upsert: false, contentType: file.type || 'application/octet-stream' })
           if (uploadError) registryWarning = `Не удалось прикрепить реестр: ${uploadError.message}`
           else {
