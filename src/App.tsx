@@ -430,6 +430,7 @@ function App() {
       supabase.from('request_cargo')
         .select('packaging_qty,transport_requests!inner(transport_date,requester_id)')
         .eq('cargo_type', 'packaging')
+        .neq('transport_requests.status', 'cancelled')
         .gte('transport_requests.transport_date', reportsFrom)
         .lte('transport_requests.transport_date', reportsTo)
     ])
