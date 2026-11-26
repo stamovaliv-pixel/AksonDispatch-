@@ -111,6 +111,7 @@ function App() {
   const [reportsFrom, setReportsFrom] = useState(iso(new Date(today.getFullYear(), today.getMonth(), 1)))
   const [reportsTo, setReportsTo] = useState(iso(today))
   const [reportRows, setReportRows] = useState<ReportRow[]>([])
+  const [packagingReportRows, setPackagingReportRows] = useState<{ label: string; quantity: number }[]>([])
   const [reportsLoading, setReportsLoading] = useState(false)
 
   useEffect(() => {
@@ -421,12 +422,45 @@ function App() {
     if (!supabase || !profile || !['dispatcher', 'admin'].includes(profile.role)) return
     if (!reportsFrom || !reportsTo || reportsFrom > reportsTo) { setError('Начальная дата отчёта не может быть позже конечной.'); return }
     setReportsLoading(true); setError('')
-    const { data, error: reportError } = await supabase.rpc('get_transport_report_data', {
-      p_from_date: reportsFrom,
-      p_to_date: reportsTo
-    })
-    if (reportError) setError(`Не удалось сформировать отчёт: ${reportError.message}. Проверьте миграцию 0004_role_permissions_calendar_reports.sql.`)
-    else setReportRows((data || []) as ReportRow[])
+    const [reportResult, packagingResult] = await Promise.all([
+      supabase.rpc('get_transport_report_data', {
+        p_from_date: reportsFrom,
+        p_to_date: reportsTo
+      }),
+      supabase.from('request_cargo')
+        .select('packaging_qty,transport_requests!inner(transport_date,requester_id)')
+        .eq('cargo_type', 'packaging')
+        .gte('transport_requests.transport_date', reportsFrom)
+        .lte('transport_requests.transport_date', reportsTo)
+    ])
+    if (reportResult.error) {
+      setError(`Не удалось сформировать отчёт: ${reportResult.error.message}. Проверьте миграцию 0004_role_permissions_calendar_reports.sql.`)
+    } else setReportRows((reportResult.data || []) as ReportRow[])
+
+    if (packagingResult.error) {
+      setPackagingReportRows([])
+      setError((current) => `${current ? `${current} ` : ''}Не удалось получить данные по таре: ${packagingResult.error.message}`)
+    } else {
+      const cargoRows = (packagingResult.data || []) as { packaging_qty: number | null; transport_requests: { requester_id: string } | { requester_id: string }[] }[]
+      const quantitiesByRequester = new Map<string, number>()
+      for (const cargoRow of cargoRows) {
+        const request = Array.isArray(cargoRow.transport_requests) ? cargoRow.transport_requests[0] : cargoRow.transport_requests
+        if (!request) continue
+        const requesterId = request.requester_id
+        quantitiesByRequester.set(requesterId, (quantitiesByRequester.get(requesterId) || 0) + (Number(cargoRow.packaging_qty) || 0))
+      }
+      const requesterIds = [...quantitiesByRequester.keys()]
+      if (requesterIds.length) {
+        const { data: requesterProfiles, error: requesterError } = await supabase.from('profiles').select('id,username').in('id', requesterIds)
+        if (requesterError) {
+          setPackagingReportRows(requesterIds.map((id) => ({ label: id, quantity: quantitiesByRequester.get(id) || 0 })))
+          setError((current) => `${current ? `${current} ` : ''}Не удалось определить заказчиков в отчёте по таре: ${requesterError.message}`)
+        } else {
+          const names = new Map<string, string>((requesterProfiles || []).map((item: { id: string; username: string }): [string, string] => [item.id, item.username || 'Без пользователя']))
+          setPackagingReportRows(requesterIds.map((id) => ({ label: names.get(id) || 'Без пользователя', quantity: quantitiesByRequester.get(id) || 0 })).sort((a, b) => b.quantity - a.quantity || a.label.localeCompare(b.label, 'ru')))
+        }
+      } else setPackagingReportRows([])
+    }
     setReportsLoading(false)
   }
 
@@ -885,7 +919,7 @@ function App() {
         {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
         {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
         {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} reserveSlotLimit={reserveSlotLimit} setReserveSlotLimit={setReserveSlotLimit} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} templateName={registryTemplateName} templateUploading={templateUploading} onTemplateUpload={uploadRegistryTemplate} onDownloadTemplate={downloadRegistryTemplate} />}
-        {view === 'reports' && canViewStaffPages && <ReportsView rows={reportRows} from={reportsFrom} setFrom={setReportsFrom} to={reportsTo} setTo={setReportsTo} loading={reportsLoading} onGenerate={loadReports} />}
+        {view === 'reports' && canViewStaffPages && <ReportsView rows={reportRows} packagingRows={packagingReportRows} from={reportsFrom} setFrom={setReportsFrom} to={reportsTo} setTo={setReportsTo} loading={reportsLoading} onGenerate={loadReports} />}
         {view === 'instructions' && <InstructionsView role={profile.role} />}
         {view === 'history' && canViewStaffPages && <HistoryView rows={auditRows} people={people} hasMore={historyHasMore} loadingMore={historyLoadingMore} onLoadMore={() => loadHistory(true)} search={historySearch} setSearch={setHistorySearch} entity={historyEntity} setEntity={setHistoryEntity} from={historyFrom} setFrom={setHistoryFrom} to={historyTo} setTo={setHistoryTo} onRefresh={loadHistory} />}
         <footer className="app-footer"><span>АКСОН ЛОГИСТИКА</span><span>Портал заказа транспорта · {new Date().getFullYear()}</span></footer>
@@ -1335,8 +1369,16 @@ function exportReportCsv(rows: ReportRow[], filename: string) {
   const link = document.createElement('a'); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url)
 }
 
-function ReportsView({ rows, from, setFrom, to, setTo, loading, onGenerate }: {
-  rows: ReportRow[]; from: string; setFrom: (value: string) => void; to: string; setTo: (value: string) => void;
+function exportPackagingReportCsv(rows: { label: string; quantity: number }[], from: string, to: string) {
+  const total = rows.reduce((sum, row) => sum + row.quantity, 0)
+  const escape = (value: unknown) => `\"${String(value ?? '').replace(/"/g, '""')}\"`
+  const csv = '\uFEFF' + [['Заказчик', 'Тара, шт.'], ...rows.map((row) => [row.label, row.quantity]), ['Итого по сети', total]].map((row) => row.map(escape).join(';')).join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
+  const link = document.createElement('a'); link.href = url; link.download = `akson-packaging-report-${from}-${to}.csv`; link.click(); URL.revokeObjectURL(url)
+}
+
+function ReportsView({ rows, packagingRows, from, setFrom, to, setTo, loading, onGenerate }: {
+  rows: ReportRow[]; packagingRows: { label: string; quantity: number }[]; from: string; setFrom: (value: string) => void; to: string; setTo: (value: string) => void;
   loading: boolean; onGenerate: () => void
 }) {
   const bySection = (section: ReportRow['section']) => rows.filter((row) => row.section === section)
@@ -1361,6 +1403,11 @@ function ReportsView({ rows, from, setFrom, to, setTo, loading, onGenerate }: {
       <label>С даты<input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} title="Начало отчётного периода"/></label>
       <label>По дату<input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} title="Конец отчётного периода"/></label>
       <button className="button button-primary" onClick={onGenerate} disabled={loading || !from || !to || from > to} title="Сформировать отчёты за выбранный период">{loading ? 'Формируем…' : 'Сформировать отчёт'} <Activity size={15}/></button>
+    </section>
+    <section className="surface-card report-table-card packaging-report-card">
+      <div className="report-section-heading"><div><h3>Оборот тары</h3><p>Сумма количества тары в заявках за выбранный период, в штуках</p></div><button className="button button-secondary button-compact" disabled={!packagingRows.length} onClick={() => exportPackagingReportCsv(packagingRows, from, to)} title="Выгрузить оборот тары в CSV"><FileSpreadsheet size={14}/> CSV</button></div>
+      <div className="report-kpis packaging-report-total"><article className="report-kpi"><span>Всего по сети</span><strong>{packagingRows.reduce((sum, row) => sum + row.quantity, 0).toLocaleString('ru-RU')}</strong><small>шт. тары за период</small></article></div>
+      {packagingRows.length ? <div className="table-scroll"><table className="report-table"><thead><tr><th>Заказчик</th><th>Тара, шт.</th></tr></thead><tbody>{packagingRows.map((row) => <tr key={row.label}><td>{row.label}</td><td><strong>{row.quantity.toLocaleString('ru-RU')}</strong></td></tr>)}</tbody><tfoot><tr><th>Итого по сети</th><th>{packagingRows.reduce((sum, row) => sum + row.quantity, 0).toLocaleString('ru-RU')}</th></tr></tfoot></table></div> : <div className="report-empty">Нет данных по таре за выбранный период.</div>}
     </section>
     {!rows.length ? <section className="surface-card empty-large"><EmptyState icon={Activity} title="Нет сформированного отчёта" text="Выберите период и нажмите «Сформировать отчёт»."/></section> : <>
       <div className="report-kpis-heading"><strong>Сводные показатели</strong><button className="button button-secondary button-compact" disabled={!summary} onClick={() => exportReportCsv(summary ? [summary] : [], `akson-report-summary-${from}-${to}.csv`)} title="Выгрузить сводные показатели отчёта в CSV"><FileSpreadsheet size={14}/> Сводка CSV</button></div>
