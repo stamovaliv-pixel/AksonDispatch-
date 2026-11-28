@@ -1,11 +1,18 @@
 export type Role = 'customer' | 'dispatcher' | 'utz' | 'admin'
+export type PortalRole = Role | 'super_admin' | 'technician' | 'be'
+export type DispatcherPosition = 'Диспетчер' | 'Руководитель РЦ' | 'Старший смены РЦ'
 export type RequestStatus = 'created' | 'search' | 'confirmed' | 'completed' | 'cancelled'
 export type CargoType = 'goods' | 'equipment' | 'packaging'
 
 export interface Profile {
   id: string
   username: string
+  /** Operational role retained for the existing transport-request permissions. */
   role: Role
+  /** Portal role controls which modules are visible to the user. */
+  portal_role?: PortalRole | null
+  /** Distinguishes the three matrix positions that share the dispatcher operational role. */
+  position_title?: DispatcherPosition | null
   business_unit_id: string | null
   default_from_id: string | null
   is_active: boolean

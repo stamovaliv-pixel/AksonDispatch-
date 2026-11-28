@@ -8,9 +8,9 @@ import {
   SlidersHorizontal, Clock3, Upload, Download, FileText, MapPin, CalendarClock, Copy, BookOpen, Bell
 } from 'lucide-react'
 import { supabase, supabaseConfigured } from './lib/supabase'
-import type { BusinessUnit, CargoLine, Profile, RequestStatus, Role, TransportRequest } from './types'
+import type { BusinessUnit, CargoLine, DispatcherPosition, PortalRole, Profile, RequestStatus, Role, TransportRequest } from './types'
 
-type View = 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'directory' | 'settings' | 'history' | 'instructions'
+type View = 'portal-home' | 'overview' | 'calendar' | 'requests' | 'reports' | 'users' | 'directory' | 'settings' | 'history' | 'instructions'
 type RequestListFilter = 'all' | 'active' | RequestStatus
 type RequestDraft = {
   transport_date: string; slot_number: number; slot_type: 'main' | 'reserve'; from_unit_id: string | null; from_other_address: string | null;
@@ -20,6 +20,8 @@ type RequestDraft = {
 type UnitDraft = { id?: string | null; code: string; name: string; kind: 'BE' | 'RC'; address: string }
 type AuditRecord = { id: number; actor_id: string | null; action: string; entity_type: string; entity_id: string | null; details: Record<string, any>; created_at: string; actor_username?: string | null }
 type RoleLimitValues = Record<Role, string>
+type UserDraft = { username: string; password: string; role: PortalRole; position_title: DispatcherPosition | ''; business_unit_id: string; default_from_id: string }
+type UserEditDraft = UserDraft & { is_active: boolean }
 type SlotOccupancy = { transport_date: string; slot_number: number; slot_type: 'main' | 'reserve' }
 type CalendarSlot = { transport_date: string; slot_number: number; slot_type: 'main' | 'reserve'; status: RequestStatus; from_be_code: string }
 type ReportRow = { section: 'summary' | 'customer' | 'from' | 'to' | 'cargo' | 'closing_speed' | 'status'; label: string; request_count: number; average_close_days: number | null; closed_count: number; open_count: number }
@@ -27,13 +29,42 @@ type UserNotification = { id: string; user_id: string; request_id: string | null
 const VAPID_PUBLIC_KEY = (import.meta.env.VITE_VAPID_PUBLIC_KEY || '') as string
 const base64UrlToBytes = (value: string) => { const padded = value + '='.repeat((4 - value.length % 4) % 4); const base64 = padded.replace(/-/g, '+').replace(/_/g, '/'); const raw = window.atob(base64); return Uint8Array.from(raw, (char) => char.charCodeAt(0)) }
 
-const roleNames: Record<Role, string> = { customer: 'Заказчик', dispatcher: 'Диспетчер', utz: 'УТЗ', admin: 'Администратор' }
-const roleDescriptions: Record<Role, string> = {
-  customer: 'Создание, просмотр и отмена своих заявок до начала обработки',
-  dispatcher: 'Редактирование всех заявок, управление статусами и история',
-  utz: 'Просмотр и контроль всех заявок без редактирования',
-  admin: 'Полное администрирование портала'
+const roleNames: Record<PortalRole, string> = {
+  super_admin: 'Суперадминистратор', admin: 'Администратор', technician: 'Техник',
+  utz: 'УТЗ', dispatcher: 'Диспетчер', be: 'БЕ', customer: 'Заказчик'
 }
+type PortalModuleKey = 'requests' | 'dispatcher-journal' | 'client-delivery' | 'warehouse-logistics' | 'rc-shipment'
+const portalModules: { key: PortalModuleKey; label: string; icon: typeof FileSpreadsheet; status?: string }[] = [
+  { key: 'requests', label: 'Заявки', icon: FileSpreadsheet },
+  { key: 'dispatcher-journal', label: 'Журнал диспетчера', icon: BookOpen, status: 'Следующий этап' },
+  { key: 'client-delivery', label: 'Клиентская доставка', icon: Truck, status: 'Следующий этап' },
+  { key: 'warehouse-logistics', label: 'Складская логистика', icon: Warehouse, status: 'Следующий этап' },
+  { key: 'rc-shipment', label: 'Отгрузка РЦ', icon: Package, status: 'Следующий этап' }
+]
+// Portal module visibility follows the approved functional matrix. Operational
+// rights inside the existing Requests module remain governed by profiles.role and RLS.
+const roleModuleAccess: Record<PortalRole, PortalModuleKey[]> = {
+  super_admin: ['requests', 'dispatcher-journal', 'client-delivery', 'warehouse-logistics', 'rc-shipment'],
+  admin: ['requests', 'dispatcher-journal', 'client-delivery', 'warehouse-logistics', 'rc-shipment'],
+  technician: ['client-delivery', 'warehouse-logistics'],
+  utz: ['requests'],
+  dispatcher: ['requests', 'dispatcher-journal', 'rc-shipment'],
+  be: ['requests', 'client-delivery', 'warehouse-logistics'],
+  customer: ['requests']
+}
+const roleDescriptions: Record<PortalRole, string> = {
+  super_admin: 'Полный доступ к порталу и управление учётными записями и ролями',
+  admin: 'Администрирование пользователей и всех действующих модулей',
+  technician: 'Клиентская доставка и складская логистика',
+  utz: 'Просмотр и контроль заявок без редактирования',
+  dispatcher: 'Заявки, журнал диспетчера и отгрузка РЦ',
+  be: 'Заявки, клиентская доставка и складская логистика',
+  customer: 'Создание, просмотр и отмена своих заявок до начала обработки'
+}
+const dispatcherPositions: DispatcherPosition[] = ['Диспетчер', 'Руководитель РЦ', 'Старший смены РЦ']
+const portalRoleOf = (profile: Pick<Profile, 'portal_role' | 'role'>): PortalRole => profile.portal_role || profile.role
+const isPortalOnlyRole = (role: PortalRole) => role === 'technician' || role === 'be'
+const supportsExistingRequests = (profile: Pick<Profile, 'portal_role' | 'role'>) => !isPortalOnlyRole(portalRoleOf(profile))
 const statusNames: Record<RequestStatus, string> = { created: 'Создана', search: 'Поиск транспорта', confirmed: 'Подтверждена', completed: 'Выполнена', cancelled: 'Отменена' }
 const statusClasses: Record<RequestStatus, string> = { created: 'status-created', search: 'status-search', confirmed: 'status-confirmed', completed: 'status-completed', cancelled: 'status-cancelled' }
 const cargoNames: Record<string, string> = { goods: 'Товар', equipment: 'Оборудование', packaging: 'Тара' }
@@ -91,11 +122,11 @@ function App() {
   })
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showUserForm, setShowUserForm] = useState(false)
-  const [userDraft, setUserDraft] = useState({ username: '', password: '', role: 'customer' as Role, business_unit_id: '', default_from_id: '' })
+  const [userDraft, setUserDraft] = useState<UserDraft>({ username: '', password: '', role: 'customer', position_title: '', business_unit_id: '', default_from_id: '' })
   const [unitDraft, setUnitDraft] = useState<UnitDraft>({ id: null, code: '', name: '', kind: 'BE', address: '' })
   const [unitFormOpen, setUnitFormOpen] = useState(false)
   const [editingPerson, setEditingPerson] = useState<Profile | null>(null)
-  const [userEditDraft, setUserEditDraft] = useState({ username: '', password: '', role: 'customer' as Role, business_unit_id: '', default_from_id: '', is_active: true })
+  const [userEditDraft, setUserEditDraft] = useState<UserEditDraft>({ username: '', password: '', role: 'customer', position_title: '', business_unit_id: '', default_from_id: '', is_active: true })
   const [bookingAdvanceDays, setBookingAdvanceDays] = useState('0')
   const [registryTemplatePath, setRegistryTemplatePath] = useState<string | null>(null)
   const [registryTemplateName, setRegistryTemplateName] = useState<string | null>(null)
@@ -159,31 +190,39 @@ function App() {
       if (!alive) return
       if (profileError || !data) { setError(`Не удалось загрузить профиль: ${profileError?.message || 'профиль не найден'}`); return }
       if (!data.is_active) { await supabase?.auth.signOut(); setError('Учётная запись заблокирована администратором.'); return }
+      const normalizedProfile = {
+        ...data,
+        portal_role: (data.portal_role || data.role) as PortalRole,
+        position_title: data.position_title || null
+      } as Profile
       if (loadedProfileIdRef.current !== data.id) {
         loadedProfileIdRef.current = data.id
         let savedView: View | null = null
         try { savedView = sessionStorage.getItem('akson-transport-active-view') as View | null } catch { /* storage may be disabled */ }
+        const portalRole = portalRoleOf(normalizedProfile)
         const allowedViews: Record<Role, View[]> = {
           customer: ['calendar', 'requests', 'instructions'],
           utz: ['calendar', 'requests', 'instructions'],
           dispatcher: ['overview', 'calendar', 'requests', 'reports', 'history', 'instructions'],
           admin: ['overview', 'calendar', 'requests', 'reports', 'users', 'directory', 'settings', 'history', 'instructions']
         }
-        const defaultView: View = data.role === 'customer' || data.role === 'utz' ? 'calendar' : 'overview'
-        setView(savedView && allowedViews[data.role as Role]?.includes(savedView) ? savedView : defaultView)
+        const defaultView: View = isPortalOnlyRole(portalRole)
+          ? 'portal-home'
+          : normalizedProfile.role === 'customer' || normalizedProfile.role === 'utz' ? 'calendar' : 'overview'
+        setView(isPortalOnlyRole(portalRole) ? 'portal-home' : savedView && allowedViews[normalizedProfile.role]?.includes(savedView) ? savedView : defaultView)
       }
-      setProfile(data as Profile)
+      setProfile(normalizedProfile)
       setError('')
     })
     return () => { alive = false }
   }, [session])
 
-  useEffect(() => { if (profile) void loadData() }, [profile, month, showPrevious30Days])
+  useEffect(() => { if (profile && supportsExistingRequests(profile)) void loadData() }, [profile, month, showPrevious30Days])
 
   // Receive a minimal server-side broadcast when any request changes.
   // The message carries no request data; each role reloads through its own RLS scope.
   useEffect(() => {
-    if (!profile || !supabase) return
+    if (!profile || !supabase || !supportsExistingRequests(profile)) return
     // Capture the non-null client in this effect scope. TypeScript does not
     // preserve narrowing of the imported nullable binding inside cleanup.
     const client = supabase
@@ -204,7 +243,7 @@ function App() {
     }
   }, [profile?.id, month.getTime(), showPrevious30Days])
   useEffect(() => {
-    if (!profile || !supabase) { setNotifications([]); setPushEnabled(false); return }
+    if (!profile || !supabase || isPortalOnlyRole(portalRoleOf(profile))) { setNotifications([]); setPushEnabled(false); return }
     const client = supabase
     let active = true
     void loadNotifications()
@@ -246,7 +285,7 @@ function App() {
     }
   }, [profile?.id])
   useEffect(() => {
-    if (!profile) return
+    if (!profile || !supportsExistingRequests(profile)) return
     void loadSettings()
     if (profile.role === 'admin' || profile.role === 'dispatcher') void loadPeople()
   }, [profile])
@@ -285,7 +324,7 @@ function App() {
   }
 
   async function enableBrowserPush() {
-    if (!supabase || !profile) return
+    if (!supabase || !profile || isPortalOnlyRole(portalRoleOf(profile))) return
     if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
       setNotice('Этот браузер не поддерживает push-уведомления. Используйте актуальную версию Chrome или Edge.')
       return
@@ -315,7 +354,7 @@ function App() {
   }
 
   async function loadData(targetMonth: Date = month) {
-    if (!supabase || !profile) return
+    if (!supabase || !profile || !supportsExistingRequests(profile)) return
     setLoading(true); setError('')
     // The calendar itself is always a rolling 30-day window starting today.
     // Keep the separately selected month window as well for the Requests page,
@@ -372,10 +411,10 @@ function App() {
   async function loadPeople() {
     if (!supabase || !['admin', 'dispatcher'].includes(profile?.role || '')) return
     const { data, error: peopleError } = await supabase.from('profiles')
-      .select('id,username,role,business_unit_id,default_from_id,is_active,created_at')
+      .select('id,username,role,portal_role,position_title,business_unit_id,default_from_id,is_active,created_at')
       .order('username')
     if (peopleError) setError(`Пользователи: ${peopleError.message}`)
-    else setPeople((data || []) as Profile[])
+    else setPeople((data || []).map((row: any) => ({ ...row, portal_role: (row.portal_role || row.role) as PortalRole })) as Profile[])
   }
 
   async function loadSettings() {
@@ -751,7 +790,7 @@ function App() {
     setSaving(true); setError('')
     const { data, error: invokeError } = await supabase.functions.invoke('admin-create-user', {
       body: {
-        username: userDraft.username.trim(), password: userDraft.password, role: userDraft.role,
+        username: userDraft.username.trim(), password: userDraft.password, portal_role: userDraft.role, position_title: userDraft.position_title || null,
         business_unit_id: userDraft.business_unit_id || null, default_from_id: userDraft.default_from_id || null
       }
     })
@@ -759,13 +798,13 @@ function App() {
     if (invokeError) { setError(`Не удалось создать пользователя. Проверьте, что Edge Function admin-create-user развёрнута. ${invokeError.message}`); return }
     if (data?.error) { setError(String(data.error)); return }
     setNotice(`Пользователь ${userDraft.username.trim()} создан.`)
-    setUserDraft({ username: '', password: '', role: 'customer', business_unit_id: '', default_from_id: '' })
+    setUserDraft({ username: '', password: '', role: 'customer', position_title: '', business_unit_id: '', default_from_id: '' })
     setShowUserForm(false); await loadPeople(); await loadHistory()
   }
 
   function openUserEditor(person: Profile) {
     setEditingPerson(person)
-    setUserEditDraft({ username: person.username, password: '', role: person.role, business_unit_id: person.business_unit_id || '', default_from_id: person.default_from_id || '', is_active: person.is_active })
+    setUserEditDraft({ username: person.username, password: '', role: portalRoleOf(person), position_title: person.position_title || '', business_unit_id: person.business_unit_id || '', default_from_id: person.default_from_id || '', is_active: person.is_active })
   }
 
   async function saveUserEdit(event: FormEvent) {
@@ -777,7 +816,8 @@ function App() {
         user_id: editingPerson.id,
         username: userEditDraft.username.trim(),
         password: userEditDraft.password || undefined,
-        role: userEditDraft.role,
+        portal_role: userEditDraft.role,
+        position_title: userEditDraft.position_title || null,
         business_unit_id: userEditDraft.business_unit_id || null,
         default_from_id: userEditDraft.default_from_id || null,
         is_active: userEditDraft.is_active
@@ -788,7 +828,7 @@ function App() {
     if (data?.error) { setError(String(data.error)); return }
     setNotice(`Профиль пользователя ${userEditDraft.username.trim()} обновлён.`)
     if (editingPerson.id === profile?.id) {
-      setProfile((current) => current ? { ...current, username: userEditDraft.username.trim(), role: userEditDraft.role, business_unit_id: userEditDraft.business_unit_id || null, default_from_id: userEditDraft.default_from_id || null, is_active: userEditDraft.is_active } : current)
+      setProfile((current) => current ? { ...current, username: userEditDraft.username.trim() } : current)
     }
     setEditingPerson(null); await loadPeople(); await loadHistory()
   }
@@ -874,14 +914,17 @@ function App() {
   const ownRequests = requests.filter((r) => profile?.role !== 'customer' || r.requester_id === profile?.id)
   const selectedRequests = ownRequests.filter((r) => r.transport_date === selectedDay)
   const isAdmin = profile?.role === 'admin'
-  const pageTitles: Record<View, string> = { overview: 'Обзор', calendar: 'Календарь', requests: 'Заявки на транспорт', reports: 'Отчёты', users: 'Пользователи', directory: 'Справочник БЕ и РЦ', settings: 'Настройки', history: 'История изменений', instructions: 'Инструкция' }
+  const isSuperAdmin = !!profile && portalRoleOf(profile) === 'super_admin'
+  const isPortalOnly = !!profile && isPortalOnlyRole(portalRoleOf(profile))
+  const visiblePortalModules = profile ? portalModules.filter((module) => roleModuleAccess[portalRoleOf(profile)].includes(module.key)) : []
+  const pageTitles: Record<View, string> = { 'portal-home': 'Мои модули', overview: 'Обзор', calendar: 'Календарь', requests: 'Заявки на транспорт', reports: 'Отчёты', users: 'Пользователи', directory: 'Справочник БЕ и РЦ', settings: 'Настройки', history: 'История изменений', instructions: 'Инструкция' }
 
   if (!supabaseConfigured) return <SetupScreen />
   if (!session || !profile) return <LoginScreen login={login} password={password} setLogin={setLogin} setPassword={setPassword} signIn={signIn} busy={loginBusy} error={error} />
 
-  const canViewStaffPages = profile.role === 'dispatcher' || profile.role === 'admin'
-  const canCreateRequest = profile.role === 'customer' || profile.role === 'dispatcher' || profile.role === 'admin'
-  const navItems: { key: View; label: string; icon: typeof LayoutDashboard; admin?: boolean; staff?: boolean }[] = [
+  const canViewStaffPages = supportsExistingRequests(profile) && (profile.role === 'dispatcher' || profile.role === 'admin')
+  const canCreateRequest = supportsExistingRequests(profile) && (profile.role === 'customer' || profile.role === 'dispatcher' || profile.role === 'admin')
+  const defaultNavItems: { key: View; label: string; icon: typeof LayoutDashboard; admin?: boolean; staff?: boolean }[] = [
     { key: 'overview', label: 'Обзор', icon: LayoutDashboard },
     { key: 'calendar', label: 'Календарь', icon: CalendarDays },
     { key: 'requests', label: 'Заявки', icon: FileSpreadsheet },
@@ -892,17 +935,33 @@ function App() {
     { key: 'history', label: 'История', icon: HistoryIcon, staff: true },
     { key: 'instructions', label: 'Инструкция', icon: BookOpen }
   ]
+  const navItems = isPortalOnly
+    ? [{ key: 'portal-home' as View, label: 'Мои модули', icon: Layers3 }]
+    : defaultNavItems
 
   return <div className="app-shell">
     <div className="top-gradient-bar" />
     <header className="app-topbar">
       <button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={19} /></button>
-      <div className="brand-area"><img src={theme === 'dark' ? '/assets/logistic-logo-dark.svg' : '/assets/logistic-logo.svg'} alt="Аксон Логистика" /><span className="brand-divider" /><div className="brand-product"><strong>Аксон Диспетчерская</strong><small>портал заказа транспорта</small></div></div>
-      <div className="topbar-right"><div className="today-chip"><CalendarDays size={15} /><span>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</span></div><button className="icon-button" title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><div className="notification-anchor"><button className="icon-button notification-bell" title="Уведомления" aria-label="Уведомления" onClick={() => setNotificationPanelOpen((open) => !open)}><Bell size={18} />{notifications.some((item) => !item.read_at) && <span className="notification-count">{notifications.filter((item) => !item.read_at).length > 99 ? '99+' : notifications.filter((item) => !item.read_at).length}</span>}</button>{notificationPanelOpen && <div className="notification-panel"><div className="notification-panel-head"><strong>Уведомления</strong><div className="notification-panel-actions"><button type="button" className="notification-mark-all" onClick={markAllNotificationsRead} disabled={!notifications.some((item) => !item.read_at)}><Check size={13} />Прочитать все</button><button type="button" className="notification-panel-close" aria-label="Закрыть окно уведомлений" title="Закрыть" onClick={() => setNotificationPanelOpen(false)}><X size={14}/></button></div></div><div className="notification-list">{notifications.length ? notifications.slice(0, 15).map((item) => <button type="button" key={item.id} className={`notification-item ${item.read_at ? '' : 'unread'}`} onClick={() => { void markNotificationRead(item); setNotificationPanelOpen(false); setView('requests') }}><span className="notification-item-dot"/><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.body}</span><small>{new Date(item.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></span></button>) : <div className="notification-empty">Пока нет уведомлений</div>}</div><div className="notification-panel-foot"><span>{pushEnabled ? 'Push включены на этом устройстве' : 'Push-уведомления отключены'}</span>{!pushEnabled && <button type="button" className="button button-primary notification-enable" onClick={() => void enableBrowserPush()} disabled={pushBusy}>{pushBusy ? 'Подключаем…' : 'Включить push'}</button>}</div></div>}</div><div className="profile-chip"><div className="avatar">{profile.username.slice(0, 1).toUpperCase()}</div><div><strong>{profile.username}</strong><small>{roleNames[profile.role]}</small></div><ChevronDown size={14} /></div><button className="icon-button logout-button" title="Выйти" onClick={signOut}><LogOut size={17} /></button></div>
+      <div className="brand-area"><img className="puls-brand-logo" src="/assets/puls-logo-approved.png" alt="ПУЛЬС — портал управления логистикой и сервисом" /></div>
+      <div className="topbar-right"><div className="today-chip"><CalendarDays size={15} /><span>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</span></div><button className="icon-button" title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>{!isPortalOnly && <div className="notification-anchor"><button className="icon-button notification-bell" title="Уведомления" aria-label="Уведомления" onClick={() => setNotificationPanelOpen((open) => !open)}><Bell size={18} />{notifications.some((item) => !item.read_at) && <span className="notification-count">{notifications.filter((item) => !item.read_at).length > 99 ? '99+' : notifications.filter((item) => !item.read_at).length}</span>}</button>{notificationPanelOpen && <div className="notification-panel"><div className="notification-panel-head"><strong>Уведомления</strong><div className="notification-panel-actions"><button type="button" className="notification-mark-all" onClick={markAllNotificationsRead} disabled={!notifications.some((item) => !item.read_at)}><Check size={13} />Прочитать все</button><button type="button" className="notification-panel-close" aria-label="Закрыть окно уведомлений" title="Закрыть" onClick={() => setNotificationPanelOpen(false)}><X size={14}/></button></div></div><div className="notification-list">{notifications.length ? notifications.slice(0, 15).map((item) => <button type="button" key={item.id} className={`notification-item ${item.read_at ? '' : 'unread'}`} onClick={() => { void markNotificationRead(item); setNotificationPanelOpen(false); setView(isPortalOnlyRole(portalRoleOf(profile)) ? 'portal-home' : 'requests') }}><span className="notification-item-dot"/><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.body}</span><small>{new Date(item.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></span></button>) : <div className="notification-empty">Пока нет уведомлений</div>}</div><div className="notification-panel-foot"><span>{pushEnabled ? 'Push включены на этом устройстве' : 'Push-уведомления отключены'}</span>{!pushEnabled && <button type="button" className="button button-primary notification-enable" onClick={() => void enableBrowserPush()} disabled={pushBusy}>{pushBusy ? 'Подключаем…' : 'Включить push'}</button>}</div></div>}</div>}<div className="profile-chip"><div className="avatar">{profile.username.slice(0, 1).toUpperCase()}</div><div><strong>{profile.username}</strong><small>{profile.position_title || roleNames[portalRoleOf(profile)]}</small></div><ChevronDown size={14} /></div><button className="icon-button logout-button" title="Выйти" onClick={signOut}><LogOut size={17} /></button></div>
     </header>
+    <nav className="portal-module-nav" aria-label="Модули ПУЛЬС">
+      <span className="portal-module-nav-label">МОДУЛИ ПОРТАЛА</span>
+      <div className="portal-module-nav-list">
+        {visiblePortalModules.map((module) => {
+          const Icon = module.icon
+          const requestsLive = module.key === 'requests' && !isPortalOnly
+          const status = isPortalOnly && module.key === 'requests' ? 'Операции уточняются' : module.status
+          return <div key={module.key} className={`portal-module-item ${requestsLive ? 'active' : 'pending'}`} aria-current={requestsLive ? 'page' : undefined} title={requestsLive ? 'Действующий модуль. Рабочие сценарии сохранены.' : status || 'Модуль будет подключён отдельным этапом.'}>
+            <Icon size={16} /><span>{module.label}</span>{status && <small>{status}</small>}
+          </div>
+        })}
+      </div>
+    </nav>
     <div className="workspace">
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
-        <div className="sidebar-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+        <div className="sidebar-caption">РАЗДЕЛЫ МОДУЛЯ</div>
         <nav className="side-nav">
           {navItems.filter((item) => (profile.role !== 'utz' && profile.role !== 'customer' || item.key !== 'overview') && (!item.admin || isAdmin) && (!item.staff || canViewStaffPages)).map((item) => {
             const Icon = item.icon
@@ -914,19 +973,20 @@ function App() {
         <div className="page-topline"><div><h1>{pageTitles[view]}</h1><p>{getSubtitle(view, profile)}</p></div><div className="page-actions">{view === 'requests' && <MonthControls month={month} setMonth={setMonth} />}{view === 'requests' && <button className="button button-secondary" title="Очистить фильтры заявок" onClick={() => { setRequesterFilter(''); setFromFilter(''); setToFilter(''); setStatusFilter('all'); setShowCancelled(false) }}><RefreshCw size={15} /> Сбросить фильтры</button>}{(view === 'calendar' || view === 'requests') && canCreateRequest && <button className="button button-primary" title="Создать новую заявку на транспорт" onClick={() => setRequestModal({ open: true })}><Plus size={16} /> Новая заявка</button>}</div></div>
         {error && <div className="message message-error"><AlertCircle size={17} /><span>{error}</span><button onClick={() => setError('')} aria-label="Закрыть"><X size={15} /></button></div>}
         {notice && <div className="message message-success"><CheckCircle2 size={17} /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={15} /></button></div>}
-        {view === 'overview' && profile.role !== 'customer' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} onOpenRequest={(request) => setRequestModal({ open: true, request })} onSelectFilter={(filter) => { setRequesterFilter(''); setFromFilter(''); setToFilter(''); setStatusFilter(filter); setShowCancelled(filter === 'all' || filter === 'cancelled'); setView('requests') }} />}
-        {view === 'calendar' && <CalendarView days={calendarDays} requests={ownRequests} allRequests={requests} searchRequests={searchRequests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} reserveSlotLimit={Number(reserveSlotLimit) || 0} showPrevious30Days={showPrevious30Days} setShowPrevious30Days={setShowPrevious30Days} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} onExportCsv={exportSelectedRequestsCsv} onExportRegistries={exportSelectedRegistries} />}
-        {view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} requesterFilter={requesterFilter} setRequesterFilter={setRequesterFilter} fromFilter={fromFilter} setFromFilter={setFromFilter} toFilter={toFilter} setToFilter={setToFilter} statusFilter={statusFilter} setStatusFilter={setStatusFilter} showCancelled={showCancelled} setShowCancelled={setShowCancelled} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
-        {view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} />}
-        {view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
-        {view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} reserveSlotLimit={reserveSlotLimit} setReserveSlotLimit={setReserveSlotLimit} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} templateName={registryTemplateName} templateUploading={templateUploading} onTemplateUpload={uploadRegistryTemplate} onDownloadTemplate={downloadRegistryTemplate} />}
-        {view === 'reports' && canViewStaffPages && <ReportsView rows={reportRows} packagingRows={packagingReportRows} from={reportsFrom} setFrom={setReportsFrom} to={reportsTo} setTo={setReportsTo} loading={reportsLoading} onGenerate={loadReports} />}
-        {view === 'instructions' && <InstructionsView role={profile.role} />}
-        {view === 'history' && canViewStaffPages && <HistoryView rows={auditRows} people={people} hasMore={historyHasMore} loadingMore={historyLoadingMore} onLoadMore={() => loadHistory(true)} search={historySearch} setSearch={setHistorySearch} entity={historyEntity} setEntity={setHistoryEntity} from={historyFrom} setFrom={setHistoryFrom} to={historyTo} setTo={setHistoryTo} onRefresh={loadHistory} />}
-        <footer className="app-footer"><span>АКСОН ЛОГИСТИКА</span><span>Портал заказа транспорта · {new Date().getFullYear()}</span></footer>
+        {view === 'portal-home' && isPortalOnly && <PortalLandingView role={portalRoleOf(profile)} modules={visiblePortalModules} />}
+        {!isPortalOnly && view === 'overview' && profile.role !== 'customer' && <OverviewView profile={profile} requests={ownRequests} occupancy={occupancy} units={units} onNavigate={setView} onRequest={() => setRequestModal({ open: true })} onOpenRequest={(request) => setRequestModal({ open: true, request })} onSelectFilter={(filter) => { setRequesterFilter(''); setFromFilter(''); setToFilter(''); setStatusFilter(filter); setShowCancelled(filter === 'all' || filter === 'cancelled'); setView('requests') }} />}
+        {!isPortalOnly && view === 'calendar' && <CalendarView days={calendarDays} requests={ownRequests} allRequests={requests} searchRequests={searchRequests} slots={calendarSlots} occupancy={occupancy} selectedDay={selectedDay} setSelectedDay={setSelectedDay} profile={profile} units={units} minCreateDate={iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() + (profile.role === 'customer' ? (Number(bookingAdvanceDays) || 0) : 0)))} reserveSlotLimit={Number(reserveSlotLimit) || 0} showPrevious30Days={showPrevious30Days} setShowPrevious30Days={setShowPrevious30Days} onCreate={(slot, date) => setRequestModal({ open: true, slot, date })} onOpen={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} onExportCsv={exportSelectedRequestsCsv} onExportRegistries={exportSelectedRegistries} />}
+        {!isPortalOnly && view === 'requests' && <RequestsView requests={visibleRequests} units={units} profile={profile} requesterFilter={requesterFilter} setRequesterFilter={setRequesterFilter} fromFilter={fromFilter} setFromFilter={setFromFilter} toFilter={toFilter} setToFilter={setToFilter} statusFilter={statusFilter} setStatusFilter={setStatusFilter} showCancelled={showCancelled} setShowCancelled={setShowCancelled} onStatus={changeStatus} onEdit={(request) => setRequestModal({ open: true, request })} onCancel={cancelRequest} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
+        {!isPortalOnly && view === 'users' && isAdmin && <UsersView people={people} units={units} currentUserId={profile.id} formOpen={showUserForm} setFormOpen={setShowUserForm} draft={userDraft} setDraft={setUserDraft} onSubmit={createUser} onToggle={toggleUser} onEdit={openUserEditor} saving={saving} canAssignSuperAdmin={isSuperAdmin} />}
+        {!isPortalOnly && view === 'directory' && isAdmin && <DirectoryView units={units} formOpen={unitFormOpen} setFormOpen={setUnitFormOpen} draft={unitDraft} setDraft={setUnitDraft} onSubmit={saveUnit} onToggle={toggleUnit} onEdit={openUnitEditor} saving={saving} />}
+        {!isPortalOnly && view === 'settings' && isAdmin && <SettingsView bookingAdvanceDays={bookingAdvanceDays} setBookingAdvanceDays={setBookingAdvanceDays} reserveSlotLimit={reserveSlotLimit} setReserveSlotLimit={setReserveSlotLimit} roleLimits={roleLimits} setRoleLimits={setRoleLimits} onSubmit={saveSettings} saving={saving} templateName={registryTemplateName} templateUploading={templateUploading} onTemplateUpload={uploadRegistryTemplate} onDownloadTemplate={downloadRegistryTemplate} />}
+        {!isPortalOnly && view === 'reports' && canViewStaffPages && <ReportsView rows={reportRows} packagingRows={packagingReportRows} from={reportsFrom} setFrom={setReportsFrom} to={reportsTo} setTo={setReportsTo} loading={reportsLoading} onGenerate={loadReports} />}
+        {!isPortalOnly && view === 'instructions' && <InstructionsView role={profile.role} />}
+        {!isPortalOnly && view === 'history' && canViewStaffPages && <HistoryView rows={auditRows} people={people} hasMore={historyHasMore} loadingMore={historyLoadingMore} onLoadMore={() => loadHistory(true)} search={historySearch} setSearch={setHistorySearch} entity={historyEntity} setEntity={setHistoryEntity} from={historyFrom} setFrom={setHistoryFrom} to={historyTo} setTo={setHistoryTo} onRefresh={loadHistory} />}
+        <footer className="app-footer"><span>ПУЛЬС</span><span>Портал управления логистикой и сервисом · {new Date().getFullYear()}</span></footer>
       </main>
     </div>
-    {editingPerson && <UserEditModal person={editingPerson} units={units} draft={userEditDraft} setDraft={setUserEditDraft} onSubmit={saveUserEdit} onClose={() => setEditingPerson(null)} saving={saving} currentUserId={profile.id} />}
+    {editingPerson && <UserEditModal person={editingPerson} units={units} draft={userEditDraft} setDraft={setUserEditDraft} onSubmit={saveUserEdit} onClose={() => setEditingPerson(null)} saving={saving} currentUserId={profile.id} canAssignSuperAdmin={isSuperAdmin} />}
     {requestModal.open && <RequestModal units={units} people={people} profile={profile} occupancy={occupancy} bookingAdvanceDays={Number(bookingAdvanceDays) || 0} request={requestModal.request} slot={requestModal.slot} initialDate={requestModal.date} onClose={() => setRequestModal({ open: false })} onSave={saveRequest} onUploadRegistry={uploadRequestRegistry} saving={saving} registryTemplateName={registryTemplateName} registryTemplatePath={registryTemplatePath} reserveSlotLimit={Number(reserveSlotLimit) || 0} onDownloadTemplate={downloadRegistryTemplate} onDownloadRegistry={(path, name) => downloadPrivateFile(path, name)} />}
     {notificationToast && <div className="notification-toast" role="status"><div className="notification-toast-icon"><Bell size={17}/></div><div className="notification-toast-copy"><strong>{notificationToast.title}</strong><span>{notificationToast.body}</span></div><button type="button" aria-label="Закрыть уведомление" onClick={() => setNotificationToast(null)}><X size={15}/></button></div>}
     {loading && <div className="loading-pill"><span className="spinner" /> Обновляем данные…</div>}
@@ -998,7 +1058,7 @@ function InstructionsView({ role }: { role: Role }) {
       <div className="instruction-card-heading"><div className="instruction-role-icon"><Bell size={19}/></div><div><h2>Как включить Push-уведомления</h2><p>Подключение системных уведомлений на компьютере или телефоне</p></div></div>
       <div className="instruction-sections">
         <section className="instruction-section"><h3>Подключение на устройстве</h3><ul>
-          <li>Откройте Dispatch в обычном окне браузера и войдите под своей учётной записью.</li>
+          <li>Откройте ПУЛЬС в обычном окне браузера и войдите под своей учётной записью.</li>
           <li>Нажмите на колокольчик в верхней панели и выберите «Включить push».</li>
           <li>Когда браузер запросит разрешение на уведомления, нажмите «Разрешить».</li>
           <li>Дождитесь подтверждения подключения. В окне уведомлений появится статус «Push включены на этом устройстве».</li>
@@ -1011,13 +1071,13 @@ function InstructionsView({ role }: { role: Role }) {
           <li>Не используйте режим инкогнито для постоянной работы: браузер может не сохранить подписку.</li>
         </ul></section>
         <section className="instruction-section"><h3>Если уведомления не появляются</h3><ul>
-          <li>Проверьте разрешение «Уведомления» для сайта Dispatch в настройках браузера.</li>
+          <li>Проверьте разрешение «Уведомления» для сайта ПУЛЬС в настройках браузера.</li>
           <li>В Windows откройте «Параметры» → «Система» → «Уведомления» и разрешите уведомления для Chrome или Edge.</li>
           <li>Проверьте, что режим «Не беспокоить» или «Фокусировка» не блокирует баннеры.</li>
           <li>Если Push включён, но уведомление не пришло, обратитесь к администратору и сообщите время события.</li>
         </ul></section>
         <section className="instruction-section"><h3>Важная информация</h3><ul>
-          <li>Разрешение браузера и подключение Push в Dispatch — обязательные шаги. Одного входа в систему недостаточно.</li>
+          <li>Разрешение браузера и подключение Push в ПУЛЬС — обязательные шаги. Одного входа в систему недостаточно.</li>
           <li>Уведомления отправляются только пользователям, которым адресовано конкретное событие.</li>
           <li>Подписка привязана к пользователю и конкретному браузеру на конкретном устройстве.</li>
           <li>Не передавайте никому пароли, ключи или секреты Supabase. Для подключения Push они не нужны.</li>
@@ -1027,16 +1087,50 @@ function InstructionsView({ role }: { role: Role }) {
   </div>
 }
 
+function PortalLandingView({ role, modules }: { role: PortalRole; modules: typeof portalModules }) {
+  const isBe = role === 'be'
+  const roleCaption = roleNames[role]
+  const moduleDescriptions: Record<PortalModuleKey, string> = {
+    requests: isBe
+      ? 'Раздел предусмотрен матрицей доступа. Порядок работы БЕ с заявками будет подключён отдельным этапом.'
+      : 'Рабочий модуль заявок уже существует, но его операции не открываются до согласования отдельных прав для этой роли.',
+    'dispatcher-journal': 'Операционный журнал диспетчера будет подключён отдельным этапом. Он не заменяет техническую историю изменений.',
+    'client-delivery': 'Направление включено в вашу матрицу доступа. Рабочие формы и процессы будут добавлены отдельным этапом.',
+    'warehouse-logistics': 'Направление включено в вашу матрицу доступа. Складские операции будут добавлены после согласования сценариев.',
+    'rc-shipment': 'Модуль отгрузки РЦ будет подключён отдельным этапом с отдельными правами на операции.'
+  }
+  return <div className="portal-landing">
+    <section className="portal-welcome-card">
+      <div className="portal-welcome-mark"><Layers3 size={24}/></div>
+      <div><span className="portal-eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО ПУЛЬС</span><h2>Добро пожаловать в ПУЛЬС</h2><p>Ваша роль: <strong>{roleCaption}</strong>. Ниже перечислены направления, предусмотренные матрицей доступа.</p></div>
+    </section>
+    <div className="portal-landing-heading"><div><h2>Ваши модули</h2><p>Доступ к операциям будет включаться по мере согласования и запуска каждого этапа.</p></div><span>{modules.length} {modules.length === 1 ? 'модуль' : modules.length < 5 ? 'модуля' : 'модулей'}</span></div>
+    <div className="portal-landing-grid">
+      {modules.map((module) => {
+        const Icon = module.icon
+        const matrixOnly = module.key === 'requests' || module.key === 'client-delivery' || module.key === 'warehouse-logistics'
+        return <article className="portal-landing-module" key={module.key}>
+          <div className="portal-landing-module-icon"><Icon size={21}/></div>
+          <div className="portal-landing-module-copy"><h3>{module.label}</h3><p>{moduleDescriptions[module.key]}</p></div>
+          <span className="portal-module-state">{matrixOnly ? 'По матрице доступа' : 'Следующий этап'}</span>
+        </article>
+      })}
+    </div>
+    <div className="portal-safety-note"><ShieldCheck size={17}/><span>Действующие права диспетчерской не расширены. Новые операционные действия появятся только после отдельного согласования.</span></div>
+  </div>
+}
+
 function SetupScreen() {
-  return <div className="setup-screen"><div className="setup-card"><img src="/assets/logistic-logo.svg" alt="Аксон Логистика"/><div className="setup-mark"><Settings2 size={22}/></div><h1>Требуется настройка подключения</h1><p>В окружении проекта не найдены параметры Supabase. Добавьте в Vercel переменные <code>VITE_SUPABASE_URL</code> и <code>VITE_SUPABASE_ANON_KEY</code>, затем выполните новое развёртывание.</p></div></div>
+  return <div className="setup-screen"><div className="setup-card"><img className="puls-brand-logo setup-puls-logo" src="/assets/puls-logo-approved.png" alt="ПУЛЬС — портал управления логистикой и сервисом"/><div className="setup-mark"><Settings2 size={22}/></div><h1>Требуется настройка подключения</h1><p>В окружении проекта не найдены параметры Supabase. Добавьте в Vercel переменные <code>VITE_SUPABASE_URL</code> и <code>VITE_SUPABASE_ANON_KEY</code>, затем выполните новое развёртывание.</p></div></div>
 }
 
 function LoginScreen({ login, password, setLogin, setPassword, signIn, busy, error }: { login: string; password: string; setLogin: (v: string) => void; setPassword: (v: string) => void; signIn: (e: FormEvent) => void; busy: boolean; error: string }) {
   const [showPassword, setShowPassword] = useState(false)
-  return <div className="login-screen"><div className="login-gradient"/><section className="login-panel"><div className="login-brand"><img src="/assets/logistic-logo.svg" alt="Аксон Логистика"/><span>ЛОГИСТИКА · ТРАНСПОРТ</span></div><div className="login-intro"><div className="login-icon"><Truck size={22}/></div><h1>Вход в портал</h1><p>Заказ транспорта между бизнес-единицами и распределительными центрами</p></div><form onSubmit={signIn} className="login-form"><label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="Например, IVANOV01" autoComplete="username" title="Логин учётной записи для входа в портал." required /></label><label>Пароль<div className="password-wrap"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Введите пароль" autoComplete="current-password" title="Пароль вашей учётной записи." required/><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'} title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}><Eye size={17}/></button></div></label>{error && <div className="login-error"><AlertCircle size={16}/>{error}</div>}<button className="button button-primary login-submit" disabled={busy} title="Проверить логин и пароль и войти в портал">{busy ? 'Выполняется вход…' : 'Войти в систему'}<ArrowRight size={17}/></button></form><div className="login-bottom"><ShieldCheck size={15}/> Защищённый доступ для сотрудников Аксон</div></section><div className="login-side"><div className="side-illustration"><div className="illustration-orbit orbit-one"/><div className="illustration-orbit orbit-two"/><div className="illustration-truck"><Truck size={104} strokeWidth={1.05}/></div><div className="route-node node-a"/><div className="route-node node-b"/><div className="route-line"/></div><div className="login-side-copy"><span>АКСОН ЛОГИСТИКА</span><h2>Транспортная логистика<br/>в едином пространстве</h2><p>Заявки, слоты, маршруты и координация перевозок — без лишних операций.</p></div></div></div>
+  return <div className="login-screen"><div className="login-gradient"/><section className="login-panel"><div className="login-brand"><img className="puls-login-logo" src="/assets/puls-logo-approved.png" alt="ПУЛЬС — портал управления логистикой и сервисом"/></div><div className="login-intro"><div className="login-icon"><Layers3 size={22}/></div><h1>Вход в ПУЛЬС</h1><p>Логистика, управление и сервисы — в едином рабочем пространстве</p></div><form onSubmit={signIn} className="login-form"><label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="Например, IVANOV01" autoComplete="username" title="Логин учётной записи для входа в портал." required /></label><label>Пароль<div className="password-wrap"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Введите пароль" autoComplete="current-password" title="Пароль вашей учётной записи." required/><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'} title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}><Eye size={17}/></button></div></label>{error && <div className="login-error"><AlertCircle size={16}/>{error}</div>}<button className="button button-primary login-submit" disabled={busy} title="Проверить логин и пароль и войти в портал">{busy ? 'Выполняется вход…' : 'Войти в систему'}<ArrowRight size={17}/></button></form><div className="login-bottom"><ShieldCheck size={15}/> Защищённый доступ для сотрудников и партнёров</div></section><div className="login-side"><div className="side-illustration"><div className="illustration-orbit orbit-one"/><div className="illustration-orbit orbit-two"/><div className="illustration-truck"><Truck size={104} strokeWidth={1.05}/></div><div className="route-node node-a"/><div className="route-node node-b"/><div className="route-line"/></div><div className="login-side-copy"><span>ПУЛЬС</span><h2>Логистика и сервисы<br/>в едином пространстве</h2><p>Заявки, диспетчеризация, доставка и работа РЦ — в одном рабочем пространстве.</p></div></div></div>
 }
 
 function getSubtitle(view: View, profile: Profile) {
+  if (view === 'portal-home') return 'Ваши рабочие модули и направления доступа в портале ПУЛЬС.'
   if (view === 'overview') return `Здравствуйте, ${profile.username}. Сводная информация по транспортным заявкам.`
   if (view === 'calendar') return 'Планирование основных и резервных транспортных слотов на ближайшие 30 дней.'
   if (view === 'reports') return 'Заявки, направления, типы груза и скорость закрытия за выбранный период.'
@@ -1045,7 +1139,7 @@ function getSubtitle(view: View, profile: Profile) {
   if (view === 'directory') return 'Добавление и редактирование бизнес-единиц и распределительных центров.'
   if (view === 'settings') return 'Настройка лимитов заявок и минимального срока предварительной записи.'
   if (view === 'history') return 'Журнал действий пользователей и изменений в системе.'
-  if (view === 'instructions') return profile.role === 'admin' ? 'Руководство по работе для всех ролей системы.' : `Руководство по работе для роли «${roleNames[profile.role]}».`
+  if (view === 'instructions') return profile.role === 'admin' ? 'Руководство по работе для всех ролей системы.' : `Руководство по работе для роли «${roleNames[portalRoleOf(profile)]}».`
   return 'Справочник бизнес-единиц и распределительных центров.'
 }
 
@@ -1070,7 +1164,7 @@ function OverviewView({ profile, requests, occupancy, units, onNavigate, onReque
     <div className="section-heading overview-section-heading"><div><h2>Показатели за месяц</h2></div><button className="subtle-link" onClick={() => onSelectFilter('all')}>Все заявки <ArrowRight size={15}/></button></div>
     <div className="stats-grid">{stats.map((item) => { const Icon = item.icon; return <button type="button" className="stat-card stat-card-button" key={item.label} onClick={() => onSelectFilter(item.filter)} title={`Открыть заявки: ${item.label.toLowerCase()}`} aria-label={`Открыть заявки: ${item.label}, ${item.value}`}><div className={`stat-icon tone-${item.tone}`}><Icon size={19}/></div><div className="stat-label">{item.label}</div><div className="stat-value">{item.value}</div><div className="stat-hint">{item.hint}</div></button> })}</div>
     <div className="overview-grid"><section className="surface-card upcoming-card"><div className="card-heading"><div><h3>Ближайшие заявки</h3><p>Предстоящие перевозки</p></div><button className="icon-button" onClick={() => onNavigate('requests')} title="Открыть все заявки"><ArrowUpRight size={17}/></button></div>{next.length ? <div className="upcoming-list">{next.map((r) => <button type="button" className="upcoming-row upcoming-row-button" key={r.id} onClick={() => onOpenRequest(r)} title={`Открыть заявку №${r.request_no}`} aria-label={`Открыть заявку №${r.request_no}, ${dateLabel(r.transport_date)}, ${statusNames[r.status]}`}><div className="upcoming-date"><strong>{new Date(`${r.transport_date}T00:00:00`).getDate()}</strong><span>{new Date(`${r.transport_date}T00:00:00`).toLocaleDateString('ru-RU', { month: 'short' })}</span></div><div className="upcoming-route"><strong>{resolveUnit(units, r.from_unit_id, r.from_other_address)} <ArrowRight size={13}/> {resolveUnit(units, r.to_unit_id, r.to_other_address)}</strong><small>№{r.request_no} · {r.slot_type === 'main' ? 'Основной' : 'Резервный'} слот {r.slot_number} · {r.capacity_tons} т</small></div><StatusBadge status={r.status}/></button>)}</div> : <EmptyState icon={CalendarDays} title="Предстоящих заявок нет" text="Когда появятся новые перевозки, они отобразятся здесь."/>}</section><section className="surface-card today-card"><div className="card-heading"><div><h3>Сегодня</h3><p>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</p></div><div className="today-count">{todayOccupancy.length} <span>из 3 основных</span></div></div><div className="today-slot-list">{[1, 2, 3].map((slot) => { const request = todayRequests.find((r) => r.slot_type === 'main' && r.slot_number === slot && r.status !== 'cancelled'); const occupied = todayOccupancy.some((s) => s.slot_number === slot); return <div className="today-slot" key={slot}><div className={`slot-indicator ${occupied ? 'filled' : ''}`}>{slot}</div><div><strong>Основной слот {slot}</strong><small>{request ? `Заявка №${request.request_no}` : occupied ? 'Занят другой заявкой' : 'Свободен'}</small></div><span className={occupied ? 'slot-state occupied' : 'slot-state free'}>{occupied ? 'Занят' : 'Свободен'}</span></div>})}</div><button className="wide-subtle-button" onClick={() => onNavigate('calendar')}>Перейти к календарю <ArrowRight size={15}/></button></section></div>
-    <div className="overview-bottom"><div className="info-mini"><div className="mini-icon"><Building2 size={18}/></div><div><strong>{units.filter((u) => u.kind === 'BE').length} бизнес-единиц</strong><small>В активном справочнике</small></div></div><div className="info-mini"><div className="mini-icon purple"><Warehouse size={18}/></div><div><strong>{units.filter((u) => u.kind === 'RC').length} распределительных центров</strong><small>Доступно для маршрутов</small></div></div><div className="info-mini"><div className="mini-icon green"><ShieldCheck size={18}/></div><div><strong>{roleNames[profile.role]}</strong><small>Ваша роль в системе</small></div></div></div>
+    <div className="overview-bottom"><div className="info-mini"><div className="mini-icon"><Building2 size={18}/></div><div><strong>{units.filter((u) => u.kind === 'BE').length} бизнес-единиц</strong><small>В активном справочнике</small></div></div><div className="info-mini"><div className="mini-icon purple"><Warehouse size={18}/></div><div><strong>{units.filter((u) => u.kind === 'RC').length} распределительных центров</strong><small>Доступно для маршрутов</small></div></div><div className="info-mini"><div className="mini-icon green"><ShieldCheck size={18}/></div><div><strong>{roleNames[portalRoleOf(profile)]}</strong><small>Ваша роль в системе</small></div></div></div>
   </div>
 }
 
@@ -1251,12 +1345,13 @@ function RequestsView({ requests, units, profile, requesterFilter, setRequesterF
   </div>
 }
 
-function UsersView({ people, units, currentUserId, formOpen, setFormOpen, draft, setDraft, onSubmit, onToggle, onEdit, saving }: {
+function UsersView({ people, units, currentUserId, formOpen, setFormOpen, draft, setDraft, onSubmit, onToggle, onEdit, saving, canAssignSuperAdmin }: {
   people: Profile[]; units: BusinessUnit[]; currentUserId: string; formOpen: boolean; setFormOpen: (v: boolean) => void;
-  draft: { username: string; password: string; role: Role; business_unit_id: string; default_from_id: string };
-  setDraft: (v: any) => void; onSubmit: (e: FormEvent) => void; onToggle: (p: Profile) => void;
-  onEdit: (p: Profile) => void; saving: boolean
+  draft: UserDraft; setDraft: (v: UserDraft) => void; onSubmit: (e: FormEvent) => void; onToggle: (p: Profile) => void;
+  onEdit: (p: Profile) => void; saving: boolean; canAssignSuperAdmin: boolean
 }) {
+  const roleOptions = Object.entries(roleNames).filter(([key]) => canAssignSuperAdmin || key !== 'super_admin')
+  const isBusinessRole = draft.role === 'be'
   return <div className="admin-page">
     <div className="admin-summary-row">
       <div className="admin-summary"><Users size={19}/><div><strong>{people.length}</strong><small>Всего учётных записей</small></div></div>
@@ -1265,47 +1360,53 @@ function UsersView({ people, units, currentUserId, formOpen, setFormOpen, draft,
       <button className="button button-primary" onClick={() => setFormOpen(!formOpen)}><Plus size={16}/>{formOpen ? 'Скрыть форму' : 'Создать пользователя'}</button>
     </div>
     {formOpen && <section className="surface-card admin-form-card">
-      <div className="card-heading"><div><h3>Новая учётная запись</h3><p>Логин и пароль для входа в портал</p></div><button className="icon-button" onClick={() => setFormOpen(false)}><X size={17}/></button></div>
+      <div className="card-heading"><div><h3>Новая учётная запись</h3><p>Логин, роль портала и принадлежность к бизнес-единице</p></div><button className="icon-button" onClick={() => setFormOpen(false)}><X size={17}/></button></div>
       <form className="admin-form-grid" onSubmit={onSubmit}>
         <label>Логин<input value={draft.username} onChange={(e) => setDraft({ ...draft, username: e.target.value })} pattern="[A-Za-z0-9_-]{3,40}" minLength={3} maxLength={40} placeholder="IVANOV01" required/><small>3–40 символов: латиница, цифры, дефис, подчёркивание</small></label>
-        <label>Пароль<input type="password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} minLength={12} placeholder="Не менее 12 символов" required/><small>Пароль не показывается повторно после создания</small></label>
-        <label>Роль<select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role, business_unit_id: e.target.value === 'customer' ? draft.business_unit_id : '' })}>{Object.entries(roleNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-        <label>{draft.role === 'customer' ? 'Бизнес-единица (необязательно)' : 'Бизнес-единица'}<select value={draft.business_unit_id} onChange={(e) => setDraft({ ...draft, business_unit_id: e.target.value })}><option value="">Не назначена</option>{units.filter((u) => u.kind === 'BE' && u.is_active).map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
-        <label>БЕ по умолчанию (откуда)<select value={draft.default_from_id} onChange={(e) => setDraft({ ...draft, default_from_id: e.target.value })}><option value="">Не задана</option>{units.filter((u) => u.kind === 'BE' && u.is_active).map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
+        <label>Пароль<input type="password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} minLength={12} maxLength={128} placeholder="Не менее 12 символов" required/><small>Пароль не показывается повторно после создания</small></label>
+        <label>Роль<select value={draft.role} onChange={(e) => { const role = e.target.value as PortalRole; setDraft({ ...draft, role, position_title: role === 'dispatcher' ? (draft.position_title || 'Диспетчер') : '', business_unit_id: role === 'customer' || role === 'be' ? draft.business_unit_id : '' }) }}>{roleOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        {draft.role === 'dispatcher' && <label>Должность<select value={draft.position_title || 'Диспетчер'} onChange={(e) => setDraft({ ...draft, position_title: e.target.value as DispatcherPosition })}>{dispatcherPositions.map((position) => <option key={position} value={position}>{position}</option>)}</select><small>Системная роль остаётся «Диспетчер»; должность уточняет позицию в РЦ.</small></label>}
+        <label>{draft.role === 'customer' ? 'Бизнес-единица (необязательно)' : 'Бизнес-единица'}<select value={draft.business_unit_id} required={isBusinessRole} onChange={(e) => setDraft({ ...draft, business_unit_id: e.target.value })}><option value="">Не назначена</option>{units.filter((u) => u.kind === 'BE' && u.is_active).map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select>{isBusinessRole && <small>Для роли БЕ назначение конкретной бизнес-единицы обязательно.</small>}</label>
+        {(draft.role === 'customer' || draft.role === 'dispatcher') && <label>БЕ по умолчанию (откуда)<select value={draft.default_from_id} onChange={(e) => setDraft({ ...draft, default_from_id: e.target.value })}><option value="">Не задана</option>{units.filter((u) => u.kind === 'BE' && u.is_active).map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>}
         <div className="form-submit"><button className="button button-primary" disabled={saving}>{saving ? 'Создаём…' : 'Создать учётную запись'}</button></div>
       </form>
-      <div className="admin-form-note"><ShieldCheck size={15}/> Создание и смена логина выполняются через защищённые Edge Functions. Секретный ключ Supabase не передаётся в браузер.</div>
+      <div className="admin-form-note"><ShieldCheck size={15}/> Новые роли определяют доступ к модулям. Операционные права действующей диспетчерской сохраняются отдельно; Super Admin может назначить только суперадминистратор.</div>
     </section>}
     <section className="surface-card table-card">
-      <div className="card-heading table-card-heading"><div><h3>Пользователи портала</h3><p>Редактирование роли, БЕ, логина и доступа</p></div><span className="table-total">{people.length} записей</span></div>
-      <div className="table-scroll"><table className="requests-table"><thead><tr><th>Пользователь</th><th>Роль</th><th>Бизнес-единица</th><th>Статус</th><th>Действия</th></tr></thead>
-        <tbody>{people.map((person) => <tr key={person.id}>
-          <td><div className="user-cell"><div className="avatar">{person.username.slice(0, 1).toUpperCase()}</div><div><strong>{person.username}</strong><small>{person.id.slice(0, 8)}…</small></div></div></td>
-          <td><span className="role-pill">{roleNames[person.role]}</span></td>
-          <td>{units.find((u) => u.id === person.business_unit_id)?.code || '—'}</td>
-          <td><span className={`access-state ${person.is_active ? 'enabled' : 'disabled'}`}><i/>{person.is_active ? 'Активен' : 'Отключён'}</span></td>
-          <td><div className="row-actions"><button className="icon-button small" onClick={() => onEdit(person)} title="Редактировать пользователя"><Pencil size={14}/></button><button className={`button button-compact ${person.is_active ? 'button-muted-danger' : 'button-outline'}`} onClick={() => onToggle(person)} disabled={person.id === currentUserId}>{person.is_active ? 'Отключить' : 'Включить'}</button></div></td>
-        </tr>)}</tbody></table></div>
+      <div className="card-heading table-card-heading"><div><h3>Пользователи портала</h3><p>Роль портала, должность, БЕ и состояние доступа</p></div><span className="table-total">{people.length} записей</span></div>
+      <div className="table-scroll"><table className="requests-table"><thead><tr><th>Пользователь</th><th>Роль / должность</th><th>Бизнес-единица</th><th>Статус</th><th>Действия</th></tr></thead>
+        <tbody>{people.map((person) => {
+          const protectedSuperAdmin = portalRoleOf(person) === 'super_admin' && !canAssignSuperAdmin
+          return <tr key={person.id}>
+            <td><div className="user-cell"><div className="avatar">{person.username.slice(0, 1).toUpperCase()}</div><div><strong>{person.username}</strong><small>{person.id.slice(0, 8)}…</small></div></div></td>
+            <td><span className="role-pill">{roleNames[portalRoleOf(person)]}</span>{person.position_title && <small className="user-position-title">{person.position_title}</small>}</td>
+            <td>{units.find((u) => u.id === person.business_unit_id)?.code || '—'}</td>
+            <td><span className={`access-state ${person.is_active ? 'enabled' : 'disabled'}`}><i/>{person.is_active ? 'Активен' : 'Отключён'}</span></td>
+            <td><div className="row-actions"><button className="icon-button small" onClick={() => onEdit(person)} disabled={protectedSuperAdmin} title={protectedSuperAdmin ? 'Только суперадминистратор может управлять этой учётной записью' : 'Редактировать пользователя'}><Pencil size={14}/></button><button className={`button button-compact ${person.is_active ? 'button-muted-danger' : 'button-outline'}`} onClick={() => onToggle(person)} disabled={person.id === currentUserId || protectedSuperAdmin}>{person.is_active ? 'Отключить' : 'Включить'}</button></div></td>
+          </tr>
+        })}</tbody></table></div>
     </section>
   </div>
 }
 
-function UserEditModal({ person, units, draft, setDraft, onSubmit, onClose, saving, currentUserId }: {
-  person: Profile; units: BusinessUnit[];
-  draft: { username: string; password: string; role: Role; business_unit_id: string; default_from_id: string; is_active: boolean };
-  setDraft: (v: any) => void; onSubmit: (e: FormEvent) => void; onClose: () => void; saving: boolean; currentUserId: string
+function UserEditModal({ person, units, draft, setDraft, onSubmit, onClose, saving, currentUserId, canAssignSuperAdmin }: {
+  person: Profile; units: BusinessUnit[]; draft: UserEditDraft; setDraft: (v: UserEditDraft) => void;
+  onSubmit: (e: FormEvent) => void; onClose: () => void; saving: boolean; currentUserId: string; canAssignSuperAdmin: boolean
 }) {
   const isSelf = person.id === currentUserId
   const beUnits = units.filter((u) => u.kind === 'BE' && u.is_active)
+  const roleOptions = Object.entries(roleNames).filter(([key]) => canAssignSuperAdmin || key !== 'super_admin')
+  const businessRole = draft.role === 'be'
   return <div className="modal-backdrop" onMouseDown={onClose}>
     <form className="request-modal user-edit-modal" onSubmit={onSubmit} onMouseDown={(e) => e.stopPropagation()}>
       <div className="modal-heading"><div><span className="modal-eyebrow">УПРАВЛЕНИЕ ДОСТУПОМ</span><h2>Редактирование пользователя</h2><p>{person.username} · {person.id.slice(0, 8)}…</p></div><button type="button" className="icon-button" onClick={onClose}><X size={18}/></button></div>
       <div className="modal-body"><div className="admin-form-grid user-edit-grid">
         <label>Логин<input value={draft.username} onChange={(e) => setDraft({ ...draft, username: e.target.value })} pattern="[A-Za-z0-9_-]{3,40}" minLength={3} maxLength={40} required/><small>При смене логина обновится и имя для входа.</small></label>
         <label>Новый пароль<input type="password" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} minLength={12} maxLength={128} placeholder="Оставьте пустым без изменений"/><small>Не менее 12 символов; необязательно.</small></label>
-        <label>Роль<select value={draft.role} disabled={isSelf} onChange={(e) => setDraft({ ...draft, role: e.target.value as Role, business_unit_id: e.target.value === 'customer' ? draft.business_unit_id : '' })}>{Object.entries(roleNames).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-        <label>{draft.role === 'customer' ? 'Бизнес-единица (необязательно)' : 'Бизнес-единица'}<select value={draft.business_unit_id} onChange={(e) => setDraft({ ...draft, business_unit_id: e.target.value })}><option value="">Не назначена</option>{beUnits.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
-        <label>БЕ по умолчанию (откуда)<select value={draft.default_from_id} onChange={(e) => setDraft({ ...draft, default_from_id: e.target.value })}><option value="">Не задана</option>{beUnits.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>
+        <label>Роль<select value={draft.role} disabled={isSelf} onChange={(e) => { const role = e.target.value as PortalRole; setDraft({ ...draft, role, position_title: role === 'dispatcher' ? (draft.position_title || 'Диспетчер') : '', business_unit_id: role === 'customer' || role === 'be' ? draft.business_unit_id : '' }) }}>{roleOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        {draft.role === 'dispatcher' && <label>Должность<select value={draft.position_title || 'Диспетчер'} onChange={(e) => setDraft({ ...draft, position_title: e.target.value as DispatcherPosition })}>{dispatcherPositions.map((position) => <option key={position} value={position}>{position}</option>)}</select></label>}
+        <label>{draft.role === 'customer' ? 'Бизнес-единица (необязательно)' : 'Бизнес-единица'}<select value={draft.business_unit_id} required={businessRole} onChange={(e) => setDraft({ ...draft, business_unit_id: e.target.value })}><option value="">Не назначена</option>{beUnits.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select>{businessRole && <small>Для роли БЕ назначение обязательно.</small>}</label>
+        {(draft.role === 'customer' || draft.role === 'dispatcher') && <label>БЕ по умолчанию (откуда)<select value={draft.default_from_id} onChange={(e) => setDraft({ ...draft, default_from_id: e.target.value })}><option value="">Не задана</option>{beUnits.map((u) => <option value={u.id} key={u.id}>{u.code} — {u.name}</option>)}</select></label>}
       </div>
       <label className="checkbox-line"><input type="checkbox" checked={draft.is_active} disabled={isSelf} onChange={(e) => setDraft({ ...draft, is_active: e.target.checked })}/><span><strong>Учётная запись активна</strong><small>Отключённый пользователь не сможет войти в портал.</small></span></label>
       {isSelf && <div className="admin-form-note"><ShieldCheck size={15}/> Нельзя снять собственную роль администратора или отключить свою учётную запись.</div>}
@@ -1485,7 +1586,7 @@ function RequestModal({ units, people, profile, occupancy, bookingAdvanceDays, r
   const customerOptions = people.filter((person) => {
     const assignedBe = person.business_unit_id ? units.find((unit) => unit.id === person.business_unit_id && unit.kind === 'BE') : null
     const isCurrentRequester = person.id === request?.requester_id
-    return person.role === 'customer' && (!person.business_unit_id || !!assignedBe && assignedBe.is_active || isCurrentRequester) && (person.is_active || isCurrentRequester)
+    return person.role === 'customer' && portalRoleOf(person) === 'customer' && (!person.business_unit_id || !!assignedBe && assignedBe.is_active || isCurrentRequester) && (person.is_active || isCurrentRequester)
   })
   const canEditFields = request
     ? isStaff || (profile.role === 'customer' && isOwnRequest && request.status === 'created')

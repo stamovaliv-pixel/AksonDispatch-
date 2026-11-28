@@ -203,11 +203,11 @@ html[data-theme="dark"] .admin-form-note { background: #141d27; color: #afbdcb; 
   .selected-slot { align-items: flex-start; flex-wrap: wrap; }.selected-slot-actions { margin-left: 39px; }
 }
 @media (max-width: 850px) {
-  .app-topbar { padding: 0 16px; height: 66px; gap: 11px; }.mobile-menu { display: inline-grid; }.brand-area { min-width: 0; gap: 10px; }.brand-area > img { width: 119px; height: 47px; }.brand-divider { height: 28px; }.brand-product strong { font-size: 12px; }.brand-product small { font-size: 9px; }.topbar-right { gap: 8px; }.today-chip { display: none; }
+  .app-topbar { padding: 0 16px; height: 66px; gap: 11px; }.mobile-menu { display: inline-grid; }.brand-area { min-width: 0; gap: 10px; }.brand-area > img:not(.puls-brand-logo) { width: 119px; height: 47px; }.brand-divider { height: 28px; }.brand-product strong { font-size: 12px; }.brand-product small { font-size: 9px; }.topbar-right { gap: 8px; }.today-chip { display: none; }
   .workspace { position: relative; }.sidebar { position: fixed; top: 69px; bottom: 0; left: 0; z-index: 25; width: 255px; transform: translateX(-102%); transition: transform .2s ease; box-shadow: 12px 0 30px rgba(0,0,0,.08); }.sidebar.sidebar-open { transform: translateX(0); }.main-area { padding: 23px 17px 17px; width: 100%; }.overview-grid { grid-template-columns: 1fr 1fr; }.stats-grid { grid-template-columns: repeat(2, 1fr); }.login-screen { grid-template-columns: minmax(0, 1fr); }.login-panel { width: min(100%, 510px); min-height: 100vh; padding: 40px 55px; }.login-side { display: none; }
 }
 @media (max-width: 620px) {
-  .app-topbar { height: 61px; padding: 0 10px; }.brand-area > img { width: 100px; }.brand-divider { display: none; }.brand-product { display: none; }.topbar-right { gap: 5px; }.profile-chip { gap: 5px; }.profile-chip > div:nth-child(2) { display: none; }.profile-chip > svg { display: none; }.profile-chip .avatar { width: 30px; height: 30px; }.logout-button { display: none; }
+  .app-topbar { height: 61px; padding: 0 10px; }.brand-area > img:not(.puls-brand-logo) { width: 100px; }.brand-divider { display: none; }.brand-product { display: none; }.topbar-right { gap: 5px; }.profile-chip { gap: 5px; }.profile-chip > div:nth-child(2) { display: none; }.profile-chip > svg { display: none; }.profile-chip .avatar { width: 30px; height: 30px; }.logout-button { display: none; }
   .sidebar { top: 64px; }.main-area { padding: 19px 11px 15px; }.page-topline { align-items: flex-start; flex-direction: column; gap: 12px; margin-bottom: 16px; }.page-topline h1 { font-size: 23px; }.page-actions { width: 100%; justify-content: space-between; }.page-actions .button { flex: 1; }.month-controls { margin-bottom: 2px; }.month-controls strong { min-width: 120px; }
   .welcome-banner { min-height: auto; padding: 20px; }.welcome-content { max-width: 100%; }.welcome-banner h2 { font-size: 19px; max-width: 250px; }.welcome-banner p { max-width: 260px; font-size: 10px; }.welcome-art { position: absolute; opacity: .16; right: -25px; bottom: -22px; width: 190px; min-width: 0; }.welcome-art > svg { width: 95px; }.art-badge { display: none; }.circle-large { width: 145px; height: 145px; }.circle-small { width: 100px; height: 100px; }
   .stats-grid { gap: 8px; }.stat-card { min-height: 116px; padding: 12px; }.stat-value { font-size: 22px; }.overview-grid { grid-template-columns: 1fr; gap: 10px; }.upcoming-card, .today-card { padding: 14px; }.overview-bottom { grid-template-columns: 1fr; gap: 7px; }.info-mini { padding: 9px 11px; }.floating-create { position: fixed; bottom: 17px; right: 15px; display: flex; align-items: center; gap: 7px; z-index: 20; border: 0; background: var(--primary); color: white; border-radius: 30px; padding: 12px 16px; box-shadow: 0 8px 20px rgba(227,30,36,.28); font-size: 10px; font-weight: 700; }
@@ -216,7 +216,7 @@ html[data-theme="dark"] .admin-form-note { background: #141d27; color: #afbdcb; 
   .modal-backdrop { padding: 8px; align-items: end; }.request-modal { max-height: calc(100vh - 16px); border-radius: 16px 16px 10px 10px; }.modal-heading { padding: 16px; }.modal-body { padding: 15px 16px 4px; }.modal-actions { padding: 12px 16px 14px; }.form-grid-two { grid-template-columns: 1fr; gap: 10px; }.cargo-tiles { gap: 6px; }.cargo-tile { padding: 10px 4px; }.cargo-tile strong { font-size: 8px; }.modal-actions .button { flex: 1; }
   .login-panel { padding: 35px 25px 25px; }.login-intro { margin: 35px 0 22px; }.login-intro h1 { font-size: 23px; }.setup-card { padding: 25px 19px; }
 }
-@media (max-width: 380px) { .admin-form-grid { grid-template-columns: 1fr; }.brand-area > img { width: 88px; }.calendar-day { min-height: 55px; }.day-slot { height: 11px; } }
+@media (max-width: 380px) { .admin-form-grid { grid-template-columns: 1fr; }.brand-area > img:not(.puls-brand-logo) { width: 88px; }.calendar-day { min-height: 55px; }.day-slot { height: 11px; } }
 
 /* Admin controls: user editing, rules and audit history */
 .overview-section-heading { margin-top: 0; }
@@ -1620,3 +1620,106 @@ html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities
   color: var(--text); background: var(--surface-soft);
 }
 .notification-enable { min-height: 31px; padding: 7px 11px; border-radius: 8px; font-size: 10px; }
+
+/* PULS portal shell: module navigation above the unchanged request workspace. */
+.portal-module-nav {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 17px;
+  padding: 7px 32px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.portal-module-nav-label {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .11em;
+  white-space: nowrap;
+}
+.portal-module-nav-list {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: max-content;
+}
+.portal-module-item {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.portal-module-item.active {
+  color: var(--primary);
+  border-color: #f6d3d5;
+  background: #fff3f3;
+}
+.portal-module-item.pending {
+  color: var(--muted-2);
+  border-color: var(--border);
+  background: var(--surface-soft);
+}
+.portal-module-item small {
+  color: #9aa5b3;
+  font-size: 8px;
+  font-weight: 600;
+  margin-left: 2px;
+}
+@media (max-width: 850px) {
+  .portal-module-nav { padding: 7px 16px; gap: 12px; }
+}
+@media (max-width: 620px) {
+  .portal-module-nav { min-height: 43px; padding: 6px 10px; gap: 9px; }
+  .portal-module-nav-label { font-size: 8px; }
+  .portal-module-item { min-height: 30px; padding: 5px 8px; font-size: 9px; }
+  .portal-module-item small { display: none; }
+}
+
+/* ПУЛЬС: общая оболочка портала и безопасные посадочные страницы новых ролей. */
+.brand-area { min-width: 0; gap: 12px; }
+.brand-area > img.puls-brand-logo { width: 202px; height: 58px; object-fit: contain; padding: 2px 5px; background: #fff; border-radius: 7px; }
+.puls-login-logo { display: block; width: min(100%, 280px); height: auto; object-fit: contain; }
+.setup-puls-logo { width: min(100%, 270px); height: auto; object-fit: contain; }
+.login-brand { align-items: flex-start; }
+.login-brand .puls-login-logo { margin-bottom: 5px; }
+.portal-landing { display: grid; gap: 20px; }
+.portal-welcome-card { display: flex; align-items: flex-start; gap: 17px; padding: 23px 25px; border: 1px solid var(--border); border-radius: 16px; background: linear-gradient(112deg, #fff 0%, #f7fbff 100%); box-shadow: var(--shadow); }
+.portal-welcome-mark { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; flex: 0 0 auto; color: #167cc2; background: #eaf5fc; }
+.portal-eyebrow { display: block; color: #1889c5; font-size: 9px; font-weight: 800; letter-spacing: .13em; margin-bottom: 7px; }
+.portal-welcome-card h2 { margin: 0; font-size: 21px; letter-spacing: -.035em; color: var(--text); }
+.portal-welcome-card p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.portal-welcome-card p strong { color: var(--text); }
+.portal-landing-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 15px; }
+.portal-landing-heading h2 { margin: 0; font-size: 17px; letter-spacing: -.02em; }
+.portal-landing-heading p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.portal-landing-heading > span { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.portal-landing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.portal-landing-module { min-width: 0; position: relative; display: grid; grid-template-columns: 43px minmax(0, 1fr); gap: 13px; align-items: start; padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 4px 16px rgba(31,51,73,.035); }
+.portal-landing-module-icon { width: 43px; height: 43px; border-radius: 12px; display: grid; place-items: center; color: #146ca8; background: #edf7fd; }
+.portal-landing-module-copy h3 { margin: 1px 0 6px; font-size: 13px; color: var(--text); }
+.portal-landing-module-copy p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.portal-module-state { grid-column: 2; justify-self: start; margin-top: -3px; padding: 5px 8px; border-radius: 20px; background: #f1f6fa; color: #557084; font-size: 9px; font-weight: 700; }
+.portal-safety-note { display: flex; align-items: flex-start; gap: 9px; padding: 13px 15px; border: 1px solid #dbe9f1; border-radius: 11px; background: #f6fbfe; color: #5f7789; font-size: 10px; line-height: 1.5; }
+.portal-safety-note svg { flex: 0 0 auto; color: #287ca8; }
+.user-position-title { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+@media (max-width: 760px) {
+  .brand-area > img.puls-brand-logo { width: 160px; height: 48px; }
+  .portal-landing-grid { grid-template-columns: 1fr; }
+  .portal-welcome-card { padding: 17px; gap: 12px; }
+  .portal-welcome-card h2 { font-size: 18px; }
+}
+@media (max-width: 420px) {
+  .brand-area > img.puls-brand-logo { width: 136px; height: 42px; }
+  .portal-landing-module { padding: 14px; }
+}
