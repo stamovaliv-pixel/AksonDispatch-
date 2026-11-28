@@ -1689,10 +1689,12 @@ html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities
 /* ПУЛЬС: общая оболочка портала и безопасные посадочные страницы новых ролей. */
 .brand-area { min-width: 0; gap: 12px; }
 .brand-area > img.puls-brand-logo { width: 202px; height: 58px; object-fit: contain; padding: 2px 5px; background: #fff; border-radius: 7px; }
+html[data-theme="dark"] .brand-area > img.puls-brand-logo { padding: 0; background: transparent; border-radius: 0; }
 .puls-login-logo { display: block; width: min(100%, 280px); height: auto; object-fit: contain; }
 .setup-puls-logo { width: min(100%, 270px); height: auto; object-fit: contain; }
 .login-brand { align-items: flex-start; }
 .login-brand .puls-login-logo { margin-bottom: 5px; }
+.login-brand .login-akson-logo { display: block; width: 176px; height: 68px; object-fit: contain; object-position: left center; margin-bottom: 5px; }
 .portal-landing { display: grid; gap: 20px; }
 .portal-welcome-card { display: flex; align-items: flex-start; gap: 17px; padding: 23px 25px; border: 1px solid var(--border); border-radius: 16px; background: linear-gradient(112deg, #fff 0%, #f7fbff 100%); box-shadow: var(--shadow); }
 .portal-welcome-mark { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; flex: 0 0 auto; color: #167cc2; background: #eaf5fc; }
@@ -1722,4 +1724,16 @@ html[data-theme="dark"] .calendar-day:is(:hover, .selected) .calendar-capacities
 @media (max-width: 420px) {
   .brand-area > img.puls-brand-logo { width: 136px; height: 42px; }
   .portal-landing-module { padding: 14px; }
+}
+
+/* ПУЛЬС: contrast-safe module navigation and theme-aware approved brand mark. */
+html[data-theme="dark"] .portal-module-item.active {
+  color: #9bc9f7;
+  border-color: #355b7c;
+  background: rgba(50, 112, 164, .18);
+}
+html[data-theme="dark"] .portal-module-item.pending {
+  color: #b2c0cf;
+  border-color: var(--border);
+  background: var(--surface-soft);
 }

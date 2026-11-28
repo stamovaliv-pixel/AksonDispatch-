@@ -33,33 +33,36 @@ const roleNames: Record<PortalRole, string> = {
   super_admin: 'Суперадминистратор', admin: 'Администратор', technician: 'Техник',
   utz: 'УТЗ', dispatcher: 'Диспетчер', be: 'БЕ', customer: 'Заказчик'
 }
-type PortalModuleKey = 'requests' | 'dispatcher-journal' | 'client-delivery' | 'warehouse-logistics' | 'rc-shipment'
-const portalModules: { key: PortalModuleKey; label: string; icon: typeof FileSpreadsheet; status?: string }[] = [
-  { key: 'requests', label: 'Заявки', icon: FileSpreadsheet },
-  { key: 'dispatcher-journal', label: 'Журнал диспетчера', icon: BookOpen, status: 'Следующий этап' },
-  { key: 'client-delivery', label: 'Клиентская доставка', icon: Truck, status: 'Следующий этап' },
-  { key: 'warehouse-logistics', label: 'Складская логистика', icon: Warehouse, status: 'Следующий этап' },
-  { key: 'rc-shipment', label: 'Отгрузка РЦ', icon: Package, status: 'Следующий этап' }
+// Visible modules are grouped workspaces. Keep legacy Supabase module keys to avoid
+// changing the existing role/module matrix during a UI-level restructuring.
+// `requests` includes the future dispatcher journal; `rc-shipment` is now the
+// Distribution Center workspace; `warehouse-logistics` is presented as Business Unit.
+type PortalModuleKey = 'requests' | 'client-delivery' | 'warehouse-logistics' | 'rc-shipment'
+const portalModules: { key: PortalModuleKey; label: string; icon: typeof FileSpreadsheet; status?: string; detail?: string }[] = [
+  { key: 'requests', label: 'Транспортная логистика', icon: FileSpreadsheet, detail: 'Заявки и журнал диспетчера' },
+  { key: 'rc-shipment', label: 'Распределительный центр', icon: Warehouse, status: 'Следующий этап', detail: 'В том числе раздел «Отгрузка РЦ»' },
+  { key: 'warehouse-logistics', label: 'Бизнес единица', icon: Building2, status: 'Следующий этап' },
+  { key: 'client-delivery', label: 'Клиентская доставка', icon: Truck, status: 'Следующий этап' }
 ]
-// Portal module visibility follows the approved functional matrix. Operational
-// rights inside the existing Requests module remain governed by profiles.role and RLS.
+// The dispatcher journal is grouped into Transport Logistics in the portal UI.
+// Its legacy DB permission key remains untouched for backward compatibility.
 const roleModuleAccess: Record<PortalRole, PortalModuleKey[]> = {
-  super_admin: ['requests', 'dispatcher-journal', 'client-delivery', 'warehouse-logistics', 'rc-shipment'],
-  admin: ['requests', 'dispatcher-journal', 'client-delivery', 'warehouse-logistics', 'rc-shipment'],
-  technician: ['client-delivery', 'warehouse-logistics'],
+  super_admin: ['requests', 'rc-shipment', 'warehouse-logistics', 'client-delivery'],
+  admin: ['requests', 'rc-shipment', 'warehouse-logistics', 'client-delivery'],
+  technician: ['warehouse-logistics', 'client-delivery'],
   utz: ['requests'],
-  dispatcher: ['requests', 'dispatcher-journal', 'rc-shipment'],
-  be: ['requests', 'client-delivery', 'warehouse-logistics'],
+  dispatcher: ['requests', 'rc-shipment'],
+  be: ['requests', 'warehouse-logistics', 'client-delivery'],
   customer: ['requests']
 }
 const roleDescriptions: Record<PortalRole, string> = {
   super_admin: 'Полный доступ к порталу и управление учётными записями и ролями',
-  admin: 'Администрирование пользователей и всех действующих модулей',
-  technician: 'Клиентская доставка и складская логистика',
-  utz: 'Просмотр и контроль заявок без редактирования',
-  dispatcher: 'Заявки, журнал диспетчера и отгрузка РЦ',
-  be: 'Заявки, клиентская доставка и складская логистика',
-  customer: 'Создание, просмотр и отмена своих заявок до начала обработки'
+  admin: 'Администрирование пользователей и всех модулей портала',
+  technician: 'Работа с модулями Бизнес-единицы и клиентской доставки',
+  utz: 'Просмотр и контроль транспортной логистики без редактирования',
+  dispatcher: 'Транспортная логистика и распределительный центр',
+  be: 'Транспортная логистика, Бизнес-единица и клиентская доставка',
+  customer: 'Создание, просмотр и отмена своих транспортных заявок до начала обработки'
 }
 const dispatcherPositions: DispatcherPosition[] = ['Диспетчер', 'Руководитель РЦ', 'Старший смены РЦ']
 const portalRoleOf = (profile: Pick<Profile, 'portal_role' | 'role'>): PortalRole => profile.portal_role || profile.role
@@ -943,7 +946,7 @@ function App() {
     <div className="top-gradient-bar" />
     <header className="app-topbar">
       <button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={19} /></button>
-      <div className="brand-area"><img className="puls-brand-logo" src="/assets/puls-logo-approved.png" alt="ПУЛЬС — портал управления логистикой и сервисом" /></div>
+      <div className="brand-area"><img className="puls-brand-logo" src={theme === 'dark' ? '/assets/puls-logo-approved-dark.png' : '/assets/puls-logo-approved.png'} alt="ПУЛЬС — портал управления логистикой и сервисом" /></div>
       <div className="topbar-right"><div className="today-chip"><CalendarDays size={15} /><span>{today.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</span></div><button className="icon-button" title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>{!isPortalOnly && <div className="notification-anchor"><button className="icon-button notification-bell" title="Уведомления" aria-label="Уведомления" onClick={() => setNotificationPanelOpen((open) => !open)}><Bell size={18} />{notifications.some((item) => !item.read_at) && <span className="notification-count">{notifications.filter((item) => !item.read_at).length > 99 ? '99+' : notifications.filter((item) => !item.read_at).length}</span>}</button>{notificationPanelOpen && <div className="notification-panel"><div className="notification-panel-head"><strong>Уведомления</strong><div className="notification-panel-actions"><button type="button" className="notification-mark-all" onClick={markAllNotificationsRead} disabled={!notifications.some((item) => !item.read_at)}><Check size={13} />Прочитать все</button><button type="button" className="notification-panel-close" aria-label="Закрыть окно уведомлений" title="Закрыть" onClick={() => setNotificationPanelOpen(false)}><X size={14}/></button></div></div><div className="notification-list">{notifications.length ? notifications.slice(0, 15).map((item) => <button type="button" key={item.id} className={`notification-item ${item.read_at ? '' : 'unread'}`} onClick={() => { void markNotificationRead(item); setNotificationPanelOpen(false); setView(isPortalOnlyRole(portalRoleOf(profile)) ? 'portal-home' : 'requests') }}><span className="notification-item-dot"/><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.body}</span><small>{new Date(item.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></span></button>) : <div className="notification-empty">Пока нет уведомлений</div>}</div><div className="notification-panel-foot"><span>{pushEnabled ? 'Push включены на этом устройстве' : 'Push-уведомления отключены'}</span>{!pushEnabled && <button type="button" className="button button-primary notification-enable" onClick={() => void enableBrowserPush()} disabled={pushBusy}>{pushBusy ? 'Подключаем…' : 'Включить push'}</button>}</div></div>}</div>}<div className="profile-chip"><div className="avatar">{profile.username.slice(0, 1).toUpperCase()}</div><div><strong>{profile.username}</strong><small>{profile.position_title || roleNames[portalRoleOf(profile)]}</small></div><ChevronDown size={14} /></div><button className="icon-button logout-button" title="Выйти" onClick={signOut}><LogOut size={17} /></button></div>
     </header>
     <nav className="portal-module-nav" aria-label="Модули ПУЛЬС">
@@ -953,8 +956,9 @@ function App() {
           const Icon = module.icon
           const requestsLive = module.key === 'requests' && !isPortalOnly
           const status = isPortalOnly && module.key === 'requests' ? 'Операции уточняются' : module.status
-          return <div key={module.key} className={`portal-module-item ${requestsLive ? 'active' : 'pending'}`} aria-current={requestsLive ? 'page' : undefined} title={requestsLive ? 'Действующий модуль. Рабочие сценарии сохранены.' : status || 'Модуль будет подключён отдельным этапом.'}>
-            <Icon size={16} /><span>{module.label}</span>{status && <small>{status}</small>}
+          const detail = module.detail || status
+          return <div key={module.key} className={`portal-module-item ${requestsLive ? 'active' : 'pending'}`} aria-current={requestsLive ? 'page' : undefined} title={requestsLive ? 'Действующий модуль. Включает транспортные заявки; журнал диспетчера будет его внутренним разделом.' : detail || 'Модуль будет подключён отдельным этапом.'}>
+            <Icon size={16} /><span>{module.label}</span>{detail && <small>{detail}</small>}
           </div>
         })}
       </div>
@@ -1092,12 +1096,11 @@ function PortalLandingView({ role, modules }: { role: PortalRole; modules: typeo
   const roleCaption = roleNames[role]
   const moduleDescriptions: Record<PortalModuleKey, string> = {
     requests: isBe
-      ? 'Раздел предусмотрен матрицей доступа. Порядок работы БЕ с заявками будет подключён отдельным этапом.'
-      : 'Рабочий модуль заявок уже существует, но его операции не открываются до согласования отдельных прав для этой роли.',
-    'dispatcher-journal': 'Операционный журнал диспетчера будет подключён отдельным этапом. Он не заменяет техническую историю изменений.',
-    'client-delivery': 'Направление включено в вашу матрицу доступа. Рабочие формы и процессы будут добавлены отдельным этапом.',
-    'warehouse-logistics': 'Направление включено в вашу матрицу доступа. Складские операции будут добавлены после согласования сценариев.',
-    'rc-shipment': 'Модуль отгрузки РЦ будет подключён отдельным этапом с отдельными правами на операции.'
+      ? 'Транспортные заявки и журнал диспетчера как единый рабочий раздел. Доступные БЕ операции будут подключены отдельным этапом.'
+      : 'Действующий модуль транспортных заявок. В него войдёт операционный журнал диспетчера; он не заменяет техническую историю изменений.',
+    'rc-shipment': 'Единое рабочее пространство распределительного центра. В состав модуля войдёт раздел «Отгрузка РЦ», который будет подключён отдельным этапом.',
+    'warehouse-logistics': 'Рабочее пространство бизнес-единицы. Состав операций и формы БЕ будут подключены отдельным этапом.',
+    'client-delivery': 'Направление включено в вашу матрицу доступа. Рабочие формы и процессы клиентской доставки будут добавлены отдельным этапом.'
   }
   return <div className="portal-landing">
     <section className="portal-welcome-card">
@@ -1126,7 +1129,7 @@ function SetupScreen() {
 
 function LoginScreen({ login, password, setLogin, setPassword, signIn, busy, error }: { login: string; password: string; setLogin: (v: string) => void; setPassword: (v: string) => void; signIn: (e: FormEvent) => void; busy: boolean; error: string }) {
   const [showPassword, setShowPassword] = useState(false)
-  return <div className="login-screen"><div className="login-gradient"/><section className="login-panel"><div className="login-brand"><img className="puls-login-logo" src="/assets/puls-logo-approved.png" alt="ПУЛЬС — портал управления логистикой и сервисом"/></div><div className="login-intro"><div className="login-icon"><Layers3 size={22}/></div><h1>Вход в ПУЛЬС</h1><p>Логистика, управление и сервисы — в едином рабочем пространстве</p></div><form onSubmit={signIn} className="login-form"><label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="Например, IVANOV01" autoComplete="username" title="Логин учётной записи для входа в портал." required /></label><label>Пароль<div className="password-wrap"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Введите пароль" autoComplete="current-password" title="Пароль вашей учётной записи." required/><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'} title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}><Eye size={17}/></button></div></label>{error && <div className="login-error"><AlertCircle size={16}/>{error}</div>}<button className="button button-primary login-submit" disabled={busy} title="Проверить логин и пароль и войти в портал">{busy ? 'Выполняется вход…' : 'Войти в систему'}<ArrowRight size={17}/></button></form><div className="login-bottom"><ShieldCheck size={15}/> Защищённый доступ для сотрудников и партнёров</div></section><div className="login-side"><div className="side-illustration"><div className="illustration-orbit orbit-one"/><div className="illustration-orbit orbit-two"/><div className="illustration-truck"><Truck size={104} strokeWidth={1.05}/></div><div className="route-node node-a"/><div className="route-node node-b"/><div className="route-line"/></div><div className="login-side-copy"><span>ПУЛЬС</span><h2>Логистика и сервисы<br/>в едином пространстве</h2><p>Заявки, диспетчеризация, доставка и работа РЦ — в одном рабочем пространстве.</p></div></div></div>
+  return <div className="login-screen"><div className="login-gradient"/><section className="login-panel"><div className="login-brand"><img className="login-akson-logo" src="/assets/logistic-logo.svg" alt="Akson Logistics"/></div><div className="login-intro"><div className="login-icon"><Layers3 size={22}/></div><h1>ПУЛЬС</h1><p>Логистика, управление и сервисы — в едином рабочем пространстве</p></div><form onSubmit={signIn} className="login-form"><label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="Например, IVANOV01" autoComplete="username" title="Логин учётной записи для входа в портал." required /></label><label>Пароль<div className="password-wrap"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Введите пароль" autoComplete="current-password" title="Пароль вашей учётной записи." required/><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'} title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}><Eye size={17}/></button></div></label>{error && <div className="login-error"><AlertCircle size={16}/>{error}</div>}<button className="button button-primary login-submit" disabled={busy} title="Проверить логин и пароль и войти в портал">{busy ? 'Выполняется вход…' : 'Войти в систему'}<ArrowRight size={17}/></button></form><div className="login-bottom"><ShieldCheck size={15}/> Защищённый доступ для сотрудников и партнёров</div></section><div className="login-side"><div className="side-illustration"><div className="illustration-orbit orbit-one"/><div className="illustration-orbit orbit-two"/><div className="illustration-truck"><Truck size={104} strokeWidth={1.05}/></div><div className="route-node node-a"/><div className="route-node node-b"/><div className="route-line"/></div><div className="login-side-copy"><span>ПУЛЬС</span><h2>Логистика и сервисы<br/>в едином пространстве</h2><p>Заявки, диспетчеризация, доставка и работа РЦ — в одном рабочем пространстве.</p></div></div></div>
 }
 
 function getSubtitle(view: View, profile: Profile) {
